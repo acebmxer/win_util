@@ -127,7 +127,7 @@ function Invoke-WingetUpdate {
 #endregion
 
 #region --- installers ---
-# Utility registry — defines Register-Utility and standard winget wrappers
+# Utility registry â€” defines Register-Utility and standard winget wrappers
 
 $script:Registry = [System.Collections.Generic.List[hashtable]]::new()
 
@@ -161,12 +161,17 @@ function Get-UtilityFunctions {
     $customTest       = Get-Command "Test-$safeName"         -ErrorAction SilentlyContinue
     $customGetVersion = Get-Command "Get-${safeName}Version" -ErrorAction SilentlyContinue
 
+    # GetNewClosure() does not let the scriptblock see script-scope functions (Test-WingetInstalled,
+    # Invoke-Winget*, etc.) when invoked from another function. Bake the id into the source via
+    # [scriptblock]::Create so command lookup happens in the caller's session state at invoke time.
+    $idLit = "'" + ($id -replace "'", "''") + "'"
+
     return @{
-        Install    = if ($customInstall)    { $customInstall }    else { { Invoke-WingetInstall   $id }.GetNewClosure() }
-        Uninstall  = if ($customUninstall)  { $customUninstall }  else { { Invoke-WingetUninstall $id }.GetNewClosure() }
-        Update     = if ($customUpdate)     { $customUpdate }     else { { Invoke-WingetUpdate    $id }.GetNewClosure() }
-        Test       = if ($customTest)       { $customTest }       else { { Test-WingetInstalled   $id }.GetNewClosure() }
-        GetVersion = if ($customGetVersion) { $customGetVersion } else { { Get-WingetVersion      $id }.GetNewClosure() }
+        Install    = if ($customInstall)    { $customInstall }    else { [scriptblock]::Create("Invoke-WingetInstall   $idLit") }
+        Uninstall  = if ($customUninstall)  { $customUninstall }  else { [scriptblock]::Create("Invoke-WingetUninstall $idLit") }
+        Update     = if ($customUpdate)     { $customUpdate }     else { [scriptblock]::Create("Invoke-WingetUpdate    $idLit") }
+        Test       = if ($customTest)       { $customTest }       else { [scriptblock]::Create("Test-WingetInstalled   $idLit") }
+        GetVersion = if ($customGetVersion) { $customGetVersion } else { [scriptblock]::Create("Get-WingetVersion      $idLit") }
     }
 }
 
@@ -174,7 +179,7 @@ function Get-UtilityFunctions {
 #endregion
 
 #region --- utilities-list ---
-# All registered utilities — add a Register-Utility line here to add a new tool.
+# All registered utilities â€” add a Register-Utility line here to add a new tool.
 # Custom install/uninstall/update/test logic: define Install-SafeName, etc. anywhere in the loaded files.
 
 Register-Utility @{ Name = "Google Chrome";            Id = "Google.Chrome";                   Category = "Browsers" }
@@ -331,7 +336,7 @@ function Show-Footer {
     $divLeft  = cH $catW
     $divRight = cH ($inner - $catW)
 
-    $sel   = ($script:MenuState.Selected.Values | Where-Object { $_ }).Count
+    $sel   = @($script:MenuState.Selected.Values | Where-Object { $_ }).Count
     $hint1 = Format-PadRight "  [SPACE] Toggle  [A] All  [D] None  [U] Update-All  [R] Refresh  [Q] Quit" $inner
     $hint2 = Format-PadRight "  [ENTER] Install/Uninstall selected  [$sel selected]" $inner
 
@@ -388,10 +393,14 @@ function Show-Items {
     param([int]$W, [int]$H)
     $s      = $script:MenuState
     $catW   = $CAT_WIDTH + 2
+    # Inner content width for the right panel.
+    # Layout: [col 0: ║] [cat panel: catW chars] [col catW+1: ║] [items: itemW chars] [col W-1: ║]
+    # So itemW = W - catW - 3 (one for each of the 3 vertical bars).
     $itemW  = $W - $catW - 3
     $rows   = $H - $HEADER_ROWS - $FOOTER_ROWS - 1
     $startY = $HEADER_ROWS + 1
     $startX = $catW + 1
+    $rightX = $W - 1
 
     $cat   = if ($s.CatIndex -lt $s.Categories.Count) { $s.Categories[$s.CatIndex] } else { $null }
     $items = @()
@@ -413,13 +422,15 @@ function Show-Items {
             $selected  = $s.Selected[$id]
             $isCur     = ($idx -eq $s.ItemIndex)
 
-            $box = if ($selected) { "[+]" } else { "[ ]" }
+            $box      = if ($selected) { "[+]" } else { "[ ]" }
             $boxColor = if ($selected) { $FG } else { $FDim }
 
             $tagText  = if ($installed) { if ($version) { "v$version" } else { "installed" } } else { "not installed" }
             $tagColor = if ($installed) { $FM } else { $FDim }
 
-            $nameMax = $itemW - 6 - $tagText.Length
+            # Row content layout (itemW total chars): " [X] name <gap> tag "
+            # Fixed overhead besides name+tag = 1 lead + 3 box + 1 + 1 + 1 trailing = 7
+            $nameMax = $itemW - 7 - $tagText.Length
             if ($nameMax -lt 1) { $nameMax = 1 }
             if ($name.Length -gt $nameMax) { $name = $name.Substring(0, $nameMax - 1) + "~" }
             $gap = " " * ($nameMax - $name.Length)
@@ -430,8 +441,10 @@ function Show-Items {
                 Write-At $startX $ry " ${boxColor}${box}${R} ${FW}${name}${R}${gap} ${tagColor}${tagText}${R}"
             }
         } else {
-            Write-At $startX $ry (" " * ($itemW + 1))
+            Write-At $startX $ry (" " * $itemW)
         }
+
+        Write-At $rightX $ry "${FC}${cVT}${R}"
     }
 }
 

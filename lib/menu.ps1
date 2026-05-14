@@ -113,13 +113,17 @@ function Get-TermSize {
 function Show-Header {
     param([int]$W)
     $inner = $W - 2
-    $catW  = $CAT_WIDTH + 2
+    # Layout: col 0 = ║, cols 1..CAT_WIDTH+1 = cat panel inner (CAT_WIDTH+1 chars),
+    # col CAT_WIDTH+2 = divider ║, cols (CAT_WIDTH+3)..(W-2) = items panel inner,
+    # col W-1 = right ║. So divider sits at column CAT_WIDTH+2.
+    $leftLen  = $CAT_WIDTH + 1                # ═ chars on left of ╦ in divider rows
+    $rightLen = $inner - $leftLen - 1         # ═ chars on right of ╦
 
     $title   = Format-PadRight "  Windows Utilities Installer  |  win_util" $inner
     $subline = Format-PadRight "  Powered by winget  |  Use arrow keys to navigate" $inner
 
-    $divLeft  = cH $catW
-    $divRight = cH ($inner - $catW)
+    $divLeft  = cH $leftLen
+    $divRight = cH $rightLen
 
     Write-At 0 0 "${FC}${cTL}$(cH $inner)${cTR}${R}"
     Write-At 0 1 "${FC}${cVT}${R}${BOLD}${FW}${title}${R}${FC}${cVT}${R}"
@@ -127,20 +131,21 @@ function Show-Header {
     Write-At 0 3 "${FC}${cML}${divLeft}${cTT}${divRight}${cMR}${R}"
 
     $catHdr  = Format-PadRight " CATEGORY" ($CAT_WIDTH + 1)
-    $itemHdr = Format-PadRight " UTILITY" ($inner - $catW - 1)
-    Write-At 0 4 "${FC}${cVT}${R}${BOLD}${FY}${catHdr}${R}${FC}${cVT}${R} ${BOLD}${FY}${itemHdr}${R}${FC}${cVT}${R}"
+    $itemHdr = Format-PadRight " UTILITY" $rightLen
+    Write-At 0 4 "${FC}${cVT}${R}${BOLD}${FY}${catHdr}${R}${FC}${cVT}${R}${BOLD}${FY}${itemHdr}${R}${FC}${cVT}${R}"
 }
 
 function Show-Footer {
     param([int]$W, [int]$H)
     $inner = $W - 2
     $y     = $H - $FOOTER_ROWS
-    $catW  = $CAT_WIDTH + 2
+    $leftLen  = $CAT_WIDTH + 1
+    $rightLen = $inner - $leftLen - 1
 
-    $divLeft  = cH $catW
-    $divRight = cH ($inner - $catW)
+    $divLeft  = cH $leftLen
+    $divRight = cH $rightLen
 
-    $sel   = ($script:MenuState.Selected.Values | Where-Object { $_ }).Count
+    $sel   = @($script:MenuState.Selected.Values | Where-Object { $_ }).Count
     $hint1 = Format-PadRight "  [SPACE] Toggle  [A] All  [D] None  [U] Update-All  [R] Refresh  [Q] Quit" $inner
     $hint2 = Format-PadRight "  [ENTER] Install/Uninstall selected  [$sel selected]" $inner
 
@@ -196,11 +201,13 @@ function Show-Categories {
 function Show-Items {
     param([int]$W, [int]$H)
     $s      = $script:MenuState
-    $catW   = $CAT_WIDTH + 2
-    $itemW  = $W - $catW - 3
+    # Layout: col 0 ║, cols 1..(CAT_WIDTH+1) cat panel, col (CAT_WIDTH+2) ║,
+    # cols (CAT_WIDTH+3)..(W-2) items panel inner, col (W-1) ║.
+    $startX = $CAT_WIDTH + 3
+    $rightX = $W - 1
+    $itemW  = $rightX - $startX           # inner width of items panel
     $rows   = $H - $HEADER_ROWS - $FOOTER_ROWS - 1
     $startY = $HEADER_ROWS + 1
-    $startX = $catW + 1
 
     $cat   = if ($s.CatIndex -lt $s.Categories.Count) { $s.Categories[$s.CatIndex] } else { $null }
     $items = @()
@@ -222,13 +229,15 @@ function Show-Items {
             $selected  = $s.Selected[$id]
             $isCur     = ($idx -eq $s.ItemIndex)
 
-            $box = if ($selected) { "[+]" } else { "[ ]" }
+            $box      = if ($selected) { "[+]" } else { "[ ]" }
             $boxColor = if ($selected) { $FG } else { $FDim }
 
             $tagText  = if ($installed) { if ($version) { "v$version" } else { "installed" } } else { "not installed" }
             $tagColor = if ($installed) { $FM } else { $FDim }
 
-            $nameMax = $itemW - 6 - $tagText.Length
+            # Row content layout (itemW total chars): " [X] name <gap> tag "
+            # Fixed overhead besides name+tag = 1 lead + 3 box + 1 + 1 + 1 trailing = 7
+            $nameMax = $itemW - 7 - $tagText.Length
             if ($nameMax -lt 1) { $nameMax = 1 }
             if ($name.Length -gt $nameMax) { $name = $name.Substring(0, $nameMax - 1) + "~" }
             $gap = " " * ($nameMax - $name.Length)
@@ -239,8 +248,10 @@ function Show-Items {
                 Write-At $startX $ry " ${boxColor}${box}${R} ${FW}${name}${R}${gap} ${tagColor}${tagText}${R}"
             }
         } else {
-            Write-At $startX $ry (" " * ($itemW + 1))
+            Write-At $startX $ry (" " * $itemW)
         }
+
+        Write-At $rightX $ry "${FC}${cVT}${R}"
     }
 }
 

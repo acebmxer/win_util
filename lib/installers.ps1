@@ -32,12 +32,17 @@ function Get-UtilityFunctions {
     $customTest       = Get-Command "Test-$safeName"         -ErrorAction SilentlyContinue
     $customGetVersion = Get-Command "Get-${safeName}Version" -ErrorAction SilentlyContinue
 
+    # GetNewClosure() does not let the scriptblock see script-scope functions (Test-WingetInstalled,
+    # Invoke-Winget*, etc.) when invoked from another function. Bake the id into the source via
+    # [scriptblock]::Create so command lookup happens in the caller's session state at invoke time.
+    $idLit = "'" + ($id -replace "'", "''") + "'"
+
     return @{
-        Install    = if ($customInstall)    { $customInstall }    else { { Invoke-WingetInstall   $id }.GetNewClosure() }
-        Uninstall  = if ($customUninstall)  { $customUninstall }  else { { Invoke-WingetUninstall $id }.GetNewClosure() }
-        Update     = if ($customUpdate)     { $customUpdate }     else { { Invoke-WingetUpdate    $id }.GetNewClosure() }
-        Test       = if ($customTest)       { $customTest }       else { { Test-WingetInstalled   $id }.GetNewClosure() }
-        GetVersion = if ($customGetVersion) { $customGetVersion } else { { Get-WingetVersion      $id }.GetNewClosure() }
+        Install    = if ($customInstall)    { $customInstall }    else { [scriptblock]::Create("Invoke-WingetInstall   $idLit") }
+        Uninstall  = if ($customUninstall)  { $customUninstall }  else { [scriptblock]::Create("Invoke-WingetUninstall $idLit") }
+        Update     = if ($customUpdate)     { $customUpdate }     else { [scriptblock]::Create("Invoke-WingetUpdate    $idLit") }
+        Test       = if ($customTest)       { $customTest }       else { [scriptblock]::Create("Test-WingetInstalled   $idLit") }
+        GetVersion = if ($customGetVersion) { $customGetVersion } else { [scriptblock]::Create("Get-WingetVersion      $idLit") }
     }
 }
 
