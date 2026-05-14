@@ -75,12 +75,26 @@ function New-DesktopShortcut {
         $cmd      = "& ([scriptblock]::Create((irm '$url')))"
         $psArgs   = "-NoExit -ExecutionPolicy Bypass -NoProfile -Command `"$cmd`""
 
+        # Download the PozzaTech icon to a stable per-user location so the
+        # shortcut works for remote `irm | iex` users who have no local copy.
+        $iconDir  = Join-Path $env:LOCALAPPDATA 'win_util'
+        $iconPath = Join-Path $iconDir 'win_util.ico'
+        if (-not (Test-Path $iconPath)) {
+            try {
+                if (-not (Test-Path $iconDir)) { New-Item -ItemType Directory -Path $iconDir -Force | Out-Null }
+                $iconUrl = 'https://raw.githubusercontent.com/acebmxer/win_util/main/assets/win_util.ico'
+                Invoke-WebRequest -Uri $iconUrl -OutFile $iconPath -UseBasicParsing -ErrorAction Stop
+            } catch {
+                $iconPath = $null  # fall back to default PowerShell icon
+            }
+        }
+
         $shell    = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($shortcutPath)
         $shortcut.TargetPath       = $psExe
         $shortcut.Arguments        = $psArgs
         $shortcut.WorkingDirectory = $env:USERPROFILE
-        $shortcut.IconLocation     = "$psExe,0"
+        $shortcut.IconLocation     = if ($iconPath) { "$iconPath,0" } else { "$psExe,0" }
         $shortcut.Description      = 'Windows Utilities Installer (win_util)'
         $shortcut.Save()
 
