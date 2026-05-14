@@ -81,13 +81,18 @@ Register-Utility @{ Name = "WinRAR";                   Id = "RARLab.WinRAR";    
 Register-Utility @{ Name = "PowerToys";                Id = "Microsoft.PowerToys";                    Category = "System Tools"; Description = "Microsoft's productivity utilities (FancyZones, PowerRename, etc.)" }
 Register-Utility @{ Name = "Sysinternals Suite";       Id = "Microsoft.Sysinternals.Suite";           Category = "System Tools"; Description = "Microsoft's collection of Windows diagnostic utilities" }
 Register-Utility @{ Name = "Everything";               Id = "voidtools.Everything";                   Category = "System Tools"; Description = "Instant file and folder search by name" }
-Register-Utility @{ Name = "WizTree";                  Id = "AntibodySoftware.WizTree";               Category = "System Tools"; Description = "Fast disk space analyzer reading the MFT directly" }
-Register-Utility @{ Name = "WinDirStat";               Id = "WinDirStat.WinDirStat";                  Category = "System Tools"; Description = "Disk usage statistics and cleanup tool" }
 Register-Utility @{ Name = "CPU-Z";                    Id = "CPUID.CPU-Z";                            Category = "System Tools"; Description = "CPU, memory, and motherboard information utility" }
 Register-Utility @{ Name = "GPU-Z";                    Id = "TechPowerUp.GPU-Z";                      Category = "System Tools"; Description = "GPU information and monitoring utility" }
 Register-Utility @{ Name = "HWiNFO";                   Id = "REALiX.HWiNFO";                          Category = "System Tools"; Description = "Comprehensive hardware analysis and monitoring" }
-Register-Utility @{ Name = "Rufus";                    Id = "Rufus.Rufus";                            Category = "System Tools"; Description = "Create bootable USB drives from ISOs" }
-Register-Utility @{ Name = "Ventoy";                   Id = "Ventoy.Ventoy";                          Category = "System Tools"; Description = "Bootable USB tool -boot multiple ISOs from one drive" }
+
+# ── Disk Utilities ────────────────────────────────────────────────────────
+Register-Utility @{ Name = "WizTree";                  Id = "AntibodySoftware.WizTree";               Category = "Disk Utilities"; Description = "Fast disk space analyzer reading the MFT directly" }
+Register-Utility @{ Name = "WinDirStat";               Id = "WinDirStat.WinDirStat";                  Category = "Disk Utilities"; Description = "Disk usage statistics and cleanup tool" }
+Register-Utility @{ Name = "WinCleanup";               Id = "PozzaTech.WinCleanup";                   Category = "Disk Utilities"; Description = "Bundled cleanup script -DISM, temp files, hibernation, shadow copies (PozzaTech)" }
+
+# ── Bootable Media ────────────────────────────────────────────────────────
+Register-Utility @{ Name = "Rufus";                    Id = "Rufus.Rufus";                            Category = "Bootable Media"; Description = "Create bootable USB drives from ISOs" }
+Register-Utility @{ Name = "Ventoy";                   Id = "Ventoy.Ventoy";                          Category = "Bootable Media"; Description = "Bootable USB tool -boot multiple ISOs from one drive" }
 
 # ── Runtimes ──────────────────────────────────────────────────────────────
 Register-Utility @{ Name = "Java Runtime Environment"; Id = "Oracle.JavaRuntimeEnvironment";          Category = "Runtimes";    Description = "Oracle Java Runtime Environment" }

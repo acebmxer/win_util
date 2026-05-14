@@ -137,6 +137,7 @@ function Show-Banner {
 . (Join-Path $ROOT "lib\sysinfo.ps1")
 . (Join-Path $ROOT "lib\utilities.ps1")
 . (Join-Path $ROOT "lib\installers.ps1")
+. (Join-Path $ROOT "lib\wincleanup.ps1")
 . (Join-Path $ROOT "lib\profiles.ps1")
 . (Join-Path $ROOT "lib\menu.ps1")
 # COMPILE:SKIP:END
