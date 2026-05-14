@@ -73,7 +73,7 @@ foreach ($line in (Get-Content (Join-Path $ROOT "win_util.ps1"))) {
 Write-Line "#endregion"
 
 # ── Write output ──
-[System.IO.File]::WriteAllText($OUT, $sb.ToString(), [System.Text.Encoding]::UTF8)
+[System.IO.File]::WriteAllText($OUT, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
 
 Write-Host ""
 Write-Host "  Compiled -> $OUT" -ForegroundColor Green

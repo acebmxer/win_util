@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(powershell.exe -NonInteractive -ExecutionPolicy Bypass -Command \"[scriptblock]::Create\\(\\(Get-Content 'C:\\\\Users\\\\nick\\\\Documents\\\\github\\\\win_util\\\\dist\\\\win_util.ps1' -Raw\\)\\) | Out-Null; Write-Host 'OK'\")"
+    ]
+  }
+}

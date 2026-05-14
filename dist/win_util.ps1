@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Windows Utilities Installer - interactive multi-select TUI for installing,
     uninstalling, and updating common Windows software via winget.
@@ -127,7 +127,7 @@ function Invoke-WingetUpdate {
 #endregion
 
 #region --- installers ---
-# Utility registry — defines Register-Utility and standard winget wrappers
+# Utility registry â€” defines Register-Utility and standard winget wrappers
 
 $script:Registry = [System.Collections.Generic.List[hashtable]]::new()
 
@@ -174,7 +174,7 @@ function Get-UtilityFunctions {
 #endregion
 
 #region --- utilities-list ---
-# All registered utilities — add a Register-Utility line here to add a new tool.
+# All registered utilities â€” add a Register-Utility line here to add a new tool.
 # Custom install/uninstall/update/test logic: define Install-SafeName, etc. anywhere in the loaded files.
 
 Register-Utility @{ Name = "Google Chrome";            Id = "Google.Chrome";                   Category = "Browsers" }
