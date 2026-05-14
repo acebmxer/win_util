@@ -203,7 +203,8 @@ function Show-Items {
     $startX = $catW + 1
 
     $cat   = if ($s.CatIndex -lt $s.Categories.Count) { $s.Categories[$s.CatIndex] } else { $null }
-    $items = if ($cat -and $s.ByCategory[$cat]) { @($s.ByCategory[$cat]) } else { @() }
+    $items = @()
+    if ($cat -and $s.ByCategory[$cat]) { $items = @($s.ByCategory[$cat]) }
 
     if ($s.ItemIndex - $s.ScrollOffset -ge $rows) { $s.ScrollOffset = $s.ItemIndex - $rows + 1 }
     if ($s.ItemIndex -lt $s.ScrollOffset)          { $s.ScrollOffset = $s.ItemIndex }
@@ -402,7 +403,8 @@ function Start-Menu {
 
             'Spacebar' {
                 $cat   = $s.Categories[$s.CatIndex]
-                $items = if ($s.ByCategory[$cat]) { @($s.ByCategory[$cat]) } else { @() }
+                $items = @()
+                if ($s.ByCategory[$cat]) { $items = @($s.ByCategory[$cat]) }
                 if ($items.Count -gt 0 -and $s.ItemIndex -lt $items.Count) {
                     $id = $items[$s.ItemIndex].Id
                     $s.Selected[$id] = -not $s.Selected[$id]
