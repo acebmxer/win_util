@@ -355,8 +355,16 @@ function Show-Items {
             $box      = if ($selected) { "[+]" } else { "[ ]" }
             $boxColor = if ($selected) { $FG } else { $FDim }
 
-            $tagText  = if ($installed) { if ($version) { "v$version" } else { "installed" } } else { "not installed" }
-            $tagColor = if ($installed) { $FM } else { $FDim }
+            # Action-typed items (e.g. WinCleanup) are run-on-enter scripts
+            # rather than installable packages -hide the install status tag.
+            $isAction = $util.ContainsKey('Action') -and $util.Action
+            if ($isAction) {
+                $tagText  = ""
+                $tagColor = $FDim
+            } else {
+                $tagText  = if ($installed) { if ($version) { "v$version" } else { "installed" } } else { "not installed" }
+                $tagColor = if ($installed) { $FM } else { $FDim }
+            }
 
             $nameMax = $itemW - 7 - $tagText.Length
             if ($nameMax -lt 1) { $nameMax = 1 }

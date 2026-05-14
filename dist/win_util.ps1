@@ -346,32 +346,13 @@ function Get-UtilityFunctions {
 # https://github.com/acebmxer/wincleanup, author PozzaTech, MIT-equivalent
 # permission granted by repo owner).
 #
-# Registered as a utility named "WinCleanup". Install drops the script and a
-# Start Menu shortcut under %LOCALAPPDATA%\win_util\WinCleanup so users can
-# rerun it on demand without re-fetching from GitHub.
+# Registered as a utility named "WinCleanup". Selecting it from the menu runs
+# the cleanup inline in the (already-elevated) win_util session. There is no
+# install/uninstall step and no on-disk artifact -Test-WinCleanup always
+# reports "not installed" so Enter routes to the run action every time.
 
-$script:WinCleanupVersion   = "1.0"
-$script:WinCleanupInstallDir = Join-Path $env:LOCALAPPDATA 'win_util\WinCleanup'
-$script:WinCleanupScriptPath = Join-Path $script:WinCleanupInstallDir 'WinCleanup.ps1'
-$script:WinCleanupShortcut   = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\WinCleanup.lnk'
-
-# Bundled script body. Self-elevation block is stripped -shortcut launches an
-# elevated PowerShell directly. Read-Host prompts are kept so the user can
-# decide per run whether to disable hibernation, cap shadow storage, reboot.
 $script:WinCleanupBody = @'
 #Requires -Version 5.1
-<#
-.SYNOPSIS
-    Windows 11 Disk Cleanup Script
-.DESCRIPTION
-    Cleans up Windows Update remnants, temp files, hibernation file,
-    Delivery Optimization cache, and manages shadow copy storage.
-.NOTES
-    Author  : PozzaTech
-    Version : 1.0
-    Source  : https://github.com/acebmxer/wincleanup
-    Vendored into win_util.
-#>
 
 function Write-Section {
     param([string]$Title)
@@ -401,39 +382,90 @@ function Remove-ItemsSafely {
     }
 }
 
+# Run a long-running native command as a background job while showing a spinner
+# and elapsed seconds, so the user can see work is happening. The Action
+# scriptblock must end with `$LASTEXITCODE` so the job's last output is the
+# exit code -that's what we read back. Used for DISM, which can take minutes.
+function Invoke-WithSpinner {
+    param(
+        [string]$Label,
+        [scriptblock]$Action
+    )
+    $start  = Get-Date
+    $job    = Start-Job -ScriptBlock $Action
+    $frames = @('|','/','-','\')
+    $i = 0
+    try {
+        while ($job.State -eq 'Running') {
+            $elapsed = (Get-Date) - $start
+            $line = "  {0} {1}... {2:N0}:{3:D2} elapsed" -f $frames[$i % $frames.Length], $Label, [Math]::Floor($elapsed.TotalMinutes), $elapsed.Seconds
+            # \r to overwrite the same line; pad in case the prior line was longer.
+            Write-Host ("`r" + $line.PadRight(78)) -NoNewline -ForegroundColor Cyan
+            $i++
+            Start-Sleep -Milliseconds 250
+        }
+    } finally {
+        Write-Host ("`r" + (' ' * 80) + "`r") -NoNewline
+    }
+    $output = Receive-Job $job -ErrorAction SilentlyContinue
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    # Last numeric output from the job is the exit code (Action ends with $LASTEXITCODE).
+    $exit = 0
+    if ($output) {
+        $last = @($output)[-1]
+        if ($last -is [int]) { $exit = $last }
+    }
+    if ($job.State -eq 'Failed') { $exit = 1 }
+    $total = (Get-Date) - $start
+    Write-Status ("{0} finished in {1:N0}m {2:D2}s." -f $Label, [Math]::Floor($total.TotalMinutes), $total.Seconds) DarkGray
+    return $exit
+}
+
+$script:OverallStart = Get-Date
+function Get-Elapsed {
+    $e = (Get-Date) - $script:OverallStart
+    return ("{0:N0}:{1:D2}" -f [Math]::Floor($e.TotalMinutes), $e.Seconds)
+}
+
 Write-Host ""
 Write-Host "  WinCleanup  |  PozzaTech (vendored in win_util)" -ForegroundColor White
 Write-Host "  Running as: $env:USERNAME on $env:COMPUTERNAME" -ForegroundColor DarkGray
+Write-Host "  Started at: $(Get-Date -Format 'HH:mm:ss')" -ForegroundColor DarkGray
 Write-Host ""
 
-Write-Section "Step 1 of 6 - DISM Health Check"
+Write-Section "[1/6 | $(Get-Elapsed)] DISM Health Check"
 Write-Status "Checking Windows image health before cleanup..."
-$dismCheck = dism /online /cleanup-image /checkhealth 2>&1
-if ($dismCheck -match "No component store corruption detected") {
+$dismExit = Invoke-WithSpinner -Label "DISM /checkhealth" -Action {
+    dism /online /cleanup-image /checkhealth | Out-Null
+    $LASTEXITCODE
+}
+if ($dismExit -eq 0) {
     Write-Status "Image is healthy. Proceeding." Green
 } else {
-    Write-Status "DISM health check returned warnings - review output below:" Yellow
-    Write-Host ($dismCheck | Out-String) -ForegroundColor DarkYellow
+    Write-Status "DISM health check returned warnings - continuing anyway." Yellow
 }
 
-Write-Section "Step 2 of 6 - Windows Update / Component Store Cleanup"
-Write-Status "Running DISM component cleanup with /resetbase..."
-Write-Status "This may take several minutes. Please wait." Yellow
+Write-Section "[2/6 | $(Get-Elapsed)] Windows Update / Component Store Cleanup"
+Write-Status "Running DISM component cleanup with /resetbase..." Yellow
+Write-Status "This is the long step -typically 1-5 minutes." DarkGray
 
-dism /online /cleanup-image /startcomponentcleanup /resetbase | Out-Null
+$dismExit = Invoke-WithSpinner -Label "DISM /startcomponentcleanup /resetbase" -Action {
+    dism /online /cleanup-image /startcomponentcleanup /resetbase | Out-Null
+    $LASTEXITCODE
+}
 
-if ($LASTEXITCODE -eq 0) {
+if ($dismExit -eq 0) {
     Write-Status "Component store cleanup completed successfully." Green
 } else {
-    Write-Status "DISM returned exit code $LASTEXITCODE - check Event Viewer if issues arise." Yellow
+    Write-Status "DISM returned exit code $dismExit - check Event Viewer if issues arise." Yellow
 }
 
-Write-Section "Step 3 of 6 - Temp File Cleanup"
+Write-Section "[3/6 | $(Get-Elapsed)] Temp File Cleanup"
 Remove-ItemsSafely -Path $env:TEMP
 Remove-ItemsSafely -Path "C:\Windows\Temp"
 Remove-ItemsSafely -Path "C:\Windows\Prefetch"
 
-Write-Section "Step 4 of 6 - Delivery Optimization Cache"
+Write-Section "[4/6 | $(Get-Elapsed)] Delivery Optimization Cache"
 Write-Status "Clearing Delivery Optimization cache..."
 $doCmd = Get-Command Delete-DeliveryOptimizationCache -ErrorAction SilentlyContinue
 if ($doCmd) {
@@ -453,8 +485,16 @@ Remove-ItemsSafely -Path "C:\Windows\SoftwareDistribution\Download"
 Start-Service -Name wuauserv -ErrorAction SilentlyContinue
 Write-Status "Windows Update service restarted." Green
 
-Write-Section "Step 5 of 6 - Hibernation File (hiberfil.sys)"
-$hibernateEnabled = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Power" -Name HibernateEnabled -ErrorAction SilentlyContinue).HibernateEnabled
+Write-Section "[5/6 | $(Get-Elapsed)] Hibernation File (hiberfil.sys)"
+# Defensive read: on some systems (esp. desktops without hibernate hardware)
+# the HibernateEnabled value is missing entirely, which used to crash with
+# "property cannot be found on this object". Treat missing/unreadable as "off".
+$hibernateEnabled = 0
+try {
+    $hibernateEnabled = Get-ItemPropertyValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Power" -Name HibernateEnabled -ErrorAction Stop
+} catch {
+    $hibernateEnabled = 0
+}
 if ($hibernateEnabled -eq 1) {
     Write-Host ""
     Write-Host "  Hibernation is currently ENABLED." -ForegroundColor Yellow
@@ -472,7 +512,7 @@ if ($hibernateEnabled -eq 1) {
     Write-Status "Hibernation is already disabled. No action needed." DarkGray
 }
 
-Write-Section "Step 6 of 6 - Shadow Copy Storage (System Restore)"
+Write-Section "[6/6 | $(Get-Elapsed)] Shadow Copy Storage (System Restore)"
 $vssadmin = "$env:SystemRoot\System32\vssadmin.exe"
 if (-not (Test-Path $vssadmin)) {
     Write-Status "vssadmin.exe not available on this system - skipping shadow copy management." Yellow
@@ -496,7 +536,7 @@ if (-not (Test-Path $vssadmin)) {
     }
 }
 
-Write-Section "Bonus - Windows Disk Cleanup (cleanmgr)"
+Write-Section "[Bonus | $(Get-Elapsed)] Windows Disk Cleanup (cleanmgr)"
 Write-Host ""
 Write-Host "  Launching Disk Cleanup with all categories pre-selected." -ForegroundColor White
 Write-Host "  Review selections and click OK to proceed." -ForegroundColor DarkGray
@@ -505,92 +545,58 @@ $cleanmgrKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeC
 Get-ChildItem $cleanmgrKey | ForEach-Object {
     Set-ItemProperty -Path $_.PSPath -Name StateFlags0001 -Value 2 -Type DWord -ErrorAction SilentlyContinue
 }
-Start-Process -FilePath cleanmgr -ArgumentList "/sagerun:1" -Wait
+$cleanmgrStart = Get-Date
+$cleanmgrProc  = Start-Process -FilePath cleanmgr -ArgumentList "/sagerun:1" -PassThru
+$frames = @('|','/','-','\')
+$i = 0
+while (-not $cleanmgrProc.HasExited) {
+    $e = (Get-Date) - $cleanmgrStart
+    $line = "  {0} Waiting for cleanmgr... {1:N0}:{2:D2} elapsed (interact with the cleanmgr window)" -f $frames[$i % $frames.Length], [Math]::Floor($e.TotalMinutes), $e.Seconds
+    Write-Host ("`r" + $line.PadRight(78)) -NoNewline -ForegroundColor Cyan
+    Start-Sleep -Milliseconds 300
+    $i++
+}
+Write-Host ("`r" + (' ' * 80) + "`r") -NoNewline
 Write-Status "Disk Cleanup completed." Green
 
+$totalElapsed = (Get-Date) - $script:OverallStart
 Write-Host ""
 Write-Host "===========================================" -ForegroundColor Green
 Write-Host "  Cleanup Complete!" -ForegroundColor Green
-Write-Host "  A reboot is recommended to finalize changes." -ForegroundColor Green
+Write-Host ("  Total time: {0:N0}m {1:D2}s" -f [Math]::Floor($totalElapsed.TotalMinutes), $totalElapsed.Seconds) -ForegroundColor Green
 Write-Host "===========================================" -ForegroundColor Green
 Write-Host ""
-$reboot = Read-Host "  Reboot now? (Y/N)"
-if ($reboot -match "^[Yy]$") {
-    Restart-Computer -Force
-} else {
-    Write-Host "  Remember to reboot when convenient." -ForegroundColor Yellow
-    Write-Host ""
-    Read-Host "  Press Enter to exit"
-}
 '@
 
-function Install-WinCleanup {
+function Invoke-WinCleanup {
     try {
-        if (-not (Test-Path $script:WinCleanupInstallDir)) {
-            New-Item -ItemType Directory -Path $script:WinCleanupInstallDir -Force | Out-Null
-        }
-        # UTF-8 BOM keeps Windows PowerShell 5.1 happy with non-ASCII chars.
-        [System.IO.File]::WriteAllText($script:WinCleanupScriptPath, $script:WinCleanupBody, [System.Text.UTF8Encoding]::new($true))
-        # Stamp version next to the script so Get-Version can read it back.
-        Set-Content -Path (Join-Path $script:WinCleanupInstallDir 'version.txt') -Value $script:WinCleanupVersion -Encoding ASCII
-
-        $psExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        $shell = New-Object -ComObject WScript.Shell
-        $lnk   = $shell.CreateShortcut($script:WinCleanupShortcut)
-        $lnk.TargetPath       = $psExe
-        $lnk.Arguments        = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$script:WinCleanupScriptPath`""
-        $lnk.WorkingDirectory = $script:WinCleanupInstallDir
-        $lnk.IconLocation     = "$psExe,0"
-        $lnk.Description      = 'Windows 11 Disk Cleanup Script (PozzaTech)'
-        $lnk.Save()
-
-        # Flip the "Run as administrator" flag (byte 0x15, bit 0x20) so the
-        # shortcut triggers a UAC prompt -cleanmgr/DISM need elevation.
-        try {
-            $bytes = [System.IO.File]::ReadAllBytes($script:WinCleanupShortcut)
-            if ($bytes.Length -gt 0x15 -and -not ($bytes[0x15] -band 0x20)) {
-                $bytes[0x15] = $bytes[0x15] -bor 0x20
-                [System.IO.File]::WriteAllBytes($script:WinCleanupShortcut, $bytes)
-            }
-        } catch {}
-
-        Write-Host "  Installed to $script:WinCleanupScriptPath" -ForegroundColor Green
-        Write-Host "  Start Menu shortcut: WinCleanup" -ForegroundColor Green
+        # Run the body in a fresh scriptblock scope so its helper functions
+        # (Write-Section, Write-Status, Remove-ItemsSafely) don't leak into
+        # the menu session.
+        $sb = [scriptblock]::Create($script:WinCleanupBody)
+        & $sb
         $global:LASTEXITCODE = 0
     } catch {
-        Write-Host "  WinCleanup install failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "  WinCleanup failed: $($_.Exception.Message)" -ForegroundColor Red
         $global:LASTEXITCODE = 1
     }
 }
 
-function Uninstall-WinCleanup {
-    try {
-        if (Test-Path $script:WinCleanupShortcut)   { Remove-Item $script:WinCleanupShortcut -Force }
-        if (Test-Path $script:WinCleanupInstallDir) { Remove-Item $script:WinCleanupInstallDir -Recurse -Force }
-        Write-Host "  WinCleanup removed." -ForegroundColor Green
-        $global:LASTEXITCODE = 0
-    } catch {
-        Write-Host "  WinCleanup uninstall failed: $($_.Exception.Message)" -ForegroundColor Red
-        $global:LASTEXITCODE = 1
-    }
-}
+# Menu plumbing: the Enter handler picks 'install' when an item is not
+# installed, so Test always reports false and Install does the run.
+function Install-WinCleanup   { Invoke-WinCleanup }
+function Update-WinCleanup    { Invoke-WinCleanup }
+function Uninstall-WinCleanup { Invoke-WinCleanup }
+function Test-WinCleanup      { return $false }
 
-function Update-WinCleanup {
-    # Reinstall overwrites with the current bundled version.
-    Install-WinCleanup
-}
-
-function Test-WinCleanup {
-    return (Test-Path $script:WinCleanupScriptPath)
-}
-
-function Get-WinCleanupVersion {
-    $verFile = Join-Path $script:WinCleanupInstallDir 'version.txt'
-    if (Test-Path $verFile) {
-        return (Get-Content $verFile -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
-    }
-    return $null
-}
+# One-shot upgrade cleanup: earlier versions dropped a script at
+# %LOCALAPPDATA%\win_util\WinCleanup and a Start Menu shortcut. The new model
+# runs inline with no on-disk artifacts, so remove the stragglers silently.
+$legacyDir   = Join-Path $env:LOCALAPPDATA 'win_util\WinCleanup'
+$legacyShort = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\WinCleanup.lnk'
+if (Test-Path $legacyShort) { Remove-Item $legacyShort -Force -ErrorAction SilentlyContinue }
+if (Test-Path $legacyDir)   { Remove-Item $legacyDir -Recurse -Force -ErrorAction SilentlyContinue }
+Remove-Variable legacyDir, legacyShort -ErrorAction SilentlyContinue
 #endregion
 
 #region --- utilities-list ---
@@ -684,7 +690,7 @@ Register-Utility @{ Name = "HWiNFO";                   Id = "REALiX.HWiNFO";    
 # ── Disk Utilities ────────────────────────────────────────────────────────
 Register-Utility @{ Name = "WizTree";                  Id = "AntibodySoftware.WizTree";               Category = "Disk Utilities"; Description = "Fast disk space analyzer reading the MFT directly" }
 Register-Utility @{ Name = "WinDirStat";               Id = "WinDirStat.WinDirStat";                  Category = "Disk Utilities"; Description = "Disk usage statistics and cleanup tool" }
-Register-Utility @{ Name = "WinCleanup";               Id = "PozzaTech.WinCleanup";                   Category = "Disk Utilities"; Description = "Bundled cleanup script -DISM, temp files, hibernation, shadow copies (PozzaTech)" }
+Register-Utility @{ Name = "WinCleanup";               Id = "PozzaTech.WinCleanup";                   Category = "Disk Utilities"; Action = $true; Description = "Bundled cleanup script -DISM, temp files, hibernation, shadow copies (PozzaTech)" }
 
 # ── Bootable Media ────────────────────────────────────────────────────────
 Register-Utility @{ Name = "Rufus";                    Id = "Rufus.Rufus";                            Category = "Bootable Media"; Description = "Create bootable USB drives from ISOs" }
@@ -1178,8 +1184,16 @@ function Show-Items {
             $box      = if ($selected) { "[+]" } else { "[ ]" }
             $boxColor = if ($selected) { $FG } else { $FDim }
 
-            $tagText  = if ($installed) { if ($version) { "v$version" } else { "installed" } } else { "not installed" }
-            $tagColor = if ($installed) { $FM } else { $FDim }
+            # Action-typed items (e.g. WinCleanup) are run-on-enter scripts
+            # rather than installable packages -hide the install status tag.
+            $isAction = $util.ContainsKey('Action') -and $util.Action
+            if ($isAction) {
+                $tagText  = ""
+                $tagColor = $FDim
+            } else {
+                $tagText  = if ($installed) { if ($version) { "v$version" } else { "installed" } } else { "not installed" }
+                $tagColor = if ($installed) { $FM } else { $FDim }
+            }
 
             $nameMax = $itemW - 7 - $tagText.Length
             if ($nameMax -lt 1) { $nameMax = 1 }

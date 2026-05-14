@@ -88,7 +88,7 @@ Register-Utility @{ Name = "HWiNFO";                   Id = "REALiX.HWiNFO";    
 # ── Disk Utilities ────────────────────────────────────────────────────────
 Register-Utility @{ Name = "WizTree";                  Id = "AntibodySoftware.WizTree";               Category = "Disk Utilities"; Description = "Fast disk space analyzer reading the MFT directly" }
 Register-Utility @{ Name = "WinDirStat";               Id = "WinDirStat.WinDirStat";                  Category = "Disk Utilities"; Description = "Disk usage statistics and cleanup tool" }
-Register-Utility @{ Name = "WinCleanup";               Id = "PozzaTech.WinCleanup";                   Category = "Disk Utilities"; Description = "Bundled cleanup script -DISM, temp files, hibernation, shadow copies (PozzaTech)" }
+Register-Utility @{ Name = "WinCleanup";               Id = "PozzaTech.WinCleanup";                   Category = "Disk Utilities"; Action = $true; Description = "Bundled cleanup script -DISM, temp files, hibernation, shadow copies (PozzaTech)" }
 
 # ── Bootable Media ────────────────────────────────────────────────────────
 Register-Utility @{ Name = "Rufus";                    Id = "Rufus.Rufus";                            Category = "Bootable Media"; Description = "Create bootable USB drives from ISOs" }
