@@ -1,10 +1,12 @@
 # win_util
 
 ```powershell
-& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/acebmxer/win_util/main/dist/win_util.ps1")))
+irm https://raw.githubusercontent.com/acebmxer/win_util/main/dist/win_util.ps1 | iex
 ```
 
 Interactive TUI for installing, uninstalling, and updating common Windows software via winget. No setup required — works on any Windows system with internet access.
+
+On first run, a **Win Util** shortcut is automatically added to your Desktop so you can relaunch the menu without re-pasting the command.
 
 ---
 
@@ -12,18 +14,18 @@ Interactive TUI for installing, uninstalling, and updating common Windows softwa
 
 ```
 ╔══════════════════════════════════════════════════════════════════════╗
-║  Windows Utilities Installer  |  win_util                           ║
-║  Powered by winget  |  Use arrow keys to navigate                   ║
+║  Windows Utilities Installer  |  win_util                            ║
+║  Powered by winget  |  Use arrow keys to navigate                    ║
 ╠════════════════════╦═════════════════════════════════════════════════╣
 ║ CATEGORY           ║ UTILITY                                         ║
 ║ Browsers           ║ [ ] Google Chrome                not installed  ║
 ║ Tools              ║ [+] 7-Zip                        v24.09         ║
 ║ Media              ║ [ ] VLC Media Player             not installed  ║
-║ Runtimes           ║                                                  ║
-║ System             ║                                                  ║
+║ Runtimes           ║                                                 ║
+║ System             ║                                                 ║
 ╠════════════════════╩═════════════════════════════════════════════════╣
-║  [SPACE] Toggle  [A] All  [D] None  [U] Update-All  [R] Refresh  [Q]║
-║  [ENTER] Install/Uninstall selected  [1 selected]                   ║
+║  [SPACE] Toggle  [A] All  [D] None  [U] Update-All  [R] Refresh  [Q] ║
+║  [ENTER] Install/Uninstall selected  [1 selected]                    ║
 ╚══════════════════════════════════════════════════════════════════════╝
 ```
 
