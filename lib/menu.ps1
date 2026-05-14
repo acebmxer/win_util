@@ -78,7 +78,7 @@ function Format-PadRight {
 #region --- Initialization ---
 
 function Initialize-MenuState {
-    param([hashtable]$ByCategory)
+    param([System.Collections.IDictionary]$ByCategory)
     $s = $script:MenuState
     $s.ByCategory    = $ByCategory
     $s.Categories    = @($ByCategory.Keys)
@@ -362,7 +362,7 @@ function Update-MenuStatus {
 #region --- Main Loop ---
 
 function Start-Menu {
-    param([hashtable]$ByCategory)
+    param([System.Collections.IDictionary]$ByCategory)
 
     Initialize-MenuState $ByCategory
 
