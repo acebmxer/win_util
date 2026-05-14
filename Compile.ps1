@@ -83,5 +83,5 @@ Write-Line "#endregion"
 Write-Host ""
 Write-Host "  Compiled -> $OUT" -ForegroundColor Green
 Write-Host ""
-Write-Host "  & ([scriptblock]::Create((irm '<raw-url>/dist/win_util.ps1')))" -ForegroundColor DarkGray
+Write-Host "  & ([scriptblock]::Create((irm '<raw-url>/dist/win_util.ps1').TrimStart([char]0xFEFF)))" -ForegroundColor DarkGray
 Write-Host ""

@@ -83,8 +83,11 @@ function Invoke-SelfElevate {
         $argList = @('-NoExit','-NoProfile','-ExecutionPolicy','Bypass','-File', $PSCommandPath)
         if ($ForwardArgs) { $argList += $ForwardArgs }
     } else {
+        # TrimStart strips the UTF-8 BOM (U+FEFF) that `irm` leaves at the start
+        # of the response; without it PS 5.1's [scriptblock]::Create misparses
+        # the script's param() defaults and errors out.
         $url = 'https://raw.githubusercontent.com/acebmxer/win_util/main/dist/win_util.ps1'
-        $cmd = "& ([scriptblock]::Create((irm '$url')))"
+        $cmd = "& ([scriptblock]::Create((irm '$url').TrimStart([char]0xFEFF)))"
         $argList = @('-NoExit','-NoProfile','-ExecutionPolicy','Bypass','-Command', $cmd)
     }
 
@@ -1392,22 +1395,29 @@ function New-DesktopShortcut {
     try {
         $psExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
         $url   = 'https://raw.githubusercontent.com/acebmxer/win_util/main/dist/win_util.ps1'
-        $cmd      = "& ([scriptblock]::Create((irm '$url')))"
+        $cmd      = "& ([scriptblock]::Create((irm '$url').TrimStart([char]0xFEFF)))"
         $psArgs   = "-NoExit -ExecutionPolicy Bypass -NoProfile -Command `"$cmd`""
 
         $shell = New-Object -ComObject WScript.Shell
 
         if (Test-Path $shortcutPath) {
-            # Shortcut exists. Update its icon reference if the icon location
-            # has drifted (e.g. a previous run fell back to the powershell.exe
-            # icon and now the .ico is available). Touching .Save() also bumps
-            # the .lnk's mtime so Explorer re-reads the icon on next refresh.
+            # Shortcut exists. Refresh its icon and Arguments so older shortcuts
+            # pick up upstream fixes (e.g. the BOM-stripping TrimStart added to
+            # the elevation command) without users having to recreate them.
+            # Touching .Save() also bumps the .lnk's mtime so Explorer re-reads
+            # the icon on next refresh.
             $existing = $shell.CreateShortcut($shortcutPath)
             $desired  = if ($iconLoc) { $iconLoc } else { "$psExe,0" }
+            $changed  = $false
             if ($existing.IconLocation -ne $desired) {
                 $existing.IconLocation = $desired
-                $existing.Save()
+                $changed = $true
             }
+            if ($existing.Arguments -ne $psArgs) {
+                $existing.Arguments = $psArgs
+                $changed = $true
+            }
+            if ($changed) { $existing.Save() }
             # Ensure pre-existing shortcuts (from older win_util versions) also
             # get the Run-as-admin flag so users don't have to recreate them.
             Set-ShortcutRunAsAdmin $shortcutPath
