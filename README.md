@@ -1,7 +1,7 @@
 # win_util
 
 ```powershell
-irm "https://raw.githubusercontent.com/acebmxer/win_util/main/dist/win_util.ps1" | iex
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/acebmxer/win_util/main/dist/win_util.ps1")))
 ```
 
 Interactive TUI for installing, uninstalling, and updating common Windows software via winget. No setup required — works on any Windows system with internet access.

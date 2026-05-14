@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-.SYNOPSIS  Bundles all source files into a single dist/win_util.ps1 for irm|iex deployment.
+.SYNOPSIS  Bundles all source files into a single dist/win_util.ps1 for remote scriptblock deployment.
 .EXAMPLE   .\Compile.ps1
 #>
 
@@ -77,5 +77,5 @@ Write-Line "#endregion"
 Write-Host ""
 Write-Host "  Compiled -> $OUT" -ForegroundColor Green
 Write-Host ""
-Write-Host "  irm '<raw-url>/dist/win_util.ps1' | iex" -ForegroundColor DarkGray
+Write-Host "  & ([scriptblock]::Create((irm '<raw-url>/dist/win_util.ps1')))" -ForegroundColor DarkGray
 Write-Host ""

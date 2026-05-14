@@ -6,7 +6,7 @@ function Initialize-Logging {
     $logDir = if ($PSScriptRoot) {
         Join-Path $PSScriptRoot "..\logs"   # dev: lib\ -> win_util\logs\  |  dist: dist\ -> win_util\logs\
     } else {
-        Join-Path $env:TEMP "win_util_logs" # irm | iex: $PSScriptRoot is empty
+        Join-Path $env:TEMP "win_util_logs" # scriptblock invocation: $PSScriptRoot is empty
     }
     if (-not (Test-Path $logDir)) {
         New-Item -ItemType Directory -Force $logDir | Out-Null
