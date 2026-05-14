@@ -57,7 +57,7 @@ function cH { param([int]$N) return ([string]$cHZ) * $N }
 
 #region --- Layout Constants ---
 
-$CAT_WIDTH    = 22   # left sidebar inner width
+$CAT_WIDTH    = 30   # left sidebar inner width
 $MIN_COLS     = 78
 $MIN_ROWS     = 24
 $HEADER_ROWS  = 6
@@ -260,7 +260,7 @@ function Get-SidebarLines {
             @{ K='Uptime'; V=$s.SysInfo.Uptime }
         )
         foreach ($p in $pairs) {
-            $lines.Add(@{ Type='info'; Text=("{0,7}: {1}" -f $p.K, $p.V) })
+            $lines.Add(@{ Type='info'; Text=("{0}: {1}" -f $p.K, $p.V) })
         }
     }
 
