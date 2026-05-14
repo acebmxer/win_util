@@ -227,20 +227,24 @@ function Update-OpenSystemProtection    { Invoke-OpenSystemProtection }
 function Uninstall-OpenSystemProtection { Invoke-OpenSystemProtection }
 function Test-OpenSystemProtection      { return $false }
 
-function Install-CreateShadowCopy       { Invoke-CreateShadowCopy }
-function Update-CreateShadowCopy        { Invoke-CreateShadowCopy }
-function Uninstall-CreateShadowCopy     { Invoke-CreateShadowCopy }
-function Test-CreateShadowCopy          { return $false }
+# Function names below must match the Utility.Name with non-alphanumerics
+# stripped (see Get-UtilityFunctions in installers.ps1). e.g. the menu entry
+# named "Create Shadow Copy (VSS)" resolves to safeName "CreateShadowCopyVSS",
+# so the handlers must be Install-CreateShadowCopyVSS / Test-... / etc.
+function Install-CreateShadowCopyVSS    { Invoke-CreateShadowCopy }
+function Update-CreateShadowCopyVSS     { Invoke-CreateShadowCopy }
+function Uninstall-CreateShadowCopyVSS  { Invoke-CreateShadowCopy }
+function Test-CreateShadowCopyVSS       { return $false }
 
-function Install-ListShadowCopies       { Invoke-ListShadowCopies }
-function Update-ListShadowCopies        { Invoke-ListShadowCopies }
-function Uninstall-ListShadowCopies     { Invoke-ListShadowCopies }
-function Test-ListShadowCopies          { return $false }
+function Install-ListShadowCopiesVSS    { Invoke-ListShadowCopies }
+function Update-ListShadowCopiesVSS     { Invoke-ListShadowCopies }
+function Uninstall-ListShadowCopiesVSS  { Invoke-ListShadowCopies }
+function Test-ListShadowCopiesVSS       { return $false }
 
-function Install-DeleteOldestShadowCopy   { Invoke-DeleteOldestShadowCopy }
-function Update-DeleteOldestShadowCopy    { Invoke-DeleteOldestShadowCopy }
-function Uninstall-DeleteOldestShadowCopy { Invoke-DeleteOldestShadowCopy }
-function Test-DeleteOldestShadowCopy      { return $false }
+function Install-DeleteOldestShadowVSS    { Invoke-DeleteOldestShadowCopy }
+function Update-DeleteOldestShadowVSS     { Invoke-DeleteOldestShadowCopy }
+function Uninstall-DeleteOldestShadowVSS  { Invoke-DeleteOldestShadowCopy }
+function Test-DeleteOldestShadowVSS       { return $false }
 
 function Install-OpenFileHistory        { Invoke-OpenFileHistory }
 function Update-OpenFileHistory         { Invoke-OpenFileHistory }
@@ -252,14 +256,14 @@ function Update-RunFileHistoryBackup    { Invoke-RunFileHistoryBackup }
 function Uninstall-RunFileHistoryBackup { Invoke-RunFileHistoryBackup }
 function Test-RunFileHistoryBackup      { return $false }
 
-function Install-WbadminSystemImage     { Invoke-WbadminSystemImage }
-function Update-WbadminSystemImage      { Invoke-WbadminSystemImage }
-function Uninstall-WbadminSystemImage   { Invoke-WbadminSystemImage }
-function Test-WbadminSystemImage        { return $false }
+function Install-SystemImageBackup      { Invoke-WbadminSystemImage }
+function Update-SystemImageBackup       { Invoke-WbadminSystemImage }
+function Uninstall-SystemImageBackup    { Invoke-WbadminSystemImage }
+function Test-SystemImageBackup         { return $false }
 
-function Install-WbadminListBackups     { Invoke-WbadminListBackups }
-function Update-WbadminListBackups      { Invoke-WbadminListBackups }
-function Uninstall-WbadminListBackups   { Invoke-WbadminListBackups }
-function Test-WbadminListBackups        { return $false }
+function Install-ListwbadminBackups     { Invoke-WbadminListBackups }
+function Update-ListwbadminBackups      { Invoke-WbadminListBackups }
+function Uninstall-ListwbadminBackups   { Invoke-WbadminListBackups }
+function Test-ListwbadminBackups        { return $false }
 
 #endregion
