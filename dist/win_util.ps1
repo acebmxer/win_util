@@ -686,6 +686,35 @@ function Assert-Winget {
     }
 }
 
+function New-DesktopShortcut {
+    # Silently creates a "Win Util" desktop shortcut if one doesn't already exist.
+    # Used so `irm .../win_util.ps1 | iex` self-installs on first run.
+    $desktop      = [Environment]::GetFolderPath('Desktop')
+    $shortcutPath = Join-Path $desktop 'Win Util.lnk'
+    if (Test-Path $shortcutPath) { return }
+
+    try {
+        $psExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $url   = 'https://raw.githubusercontent.com/acebmxer/win_util/main/dist/win_util.ps1'
+        $cmd      = "& ([scriptblock]::Create((irm '$url')))"
+        $psArgs   = "-NoExit -ExecutionPolicy Bypass -NoProfile -Command `"$cmd`""
+
+        $shell    = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath       = $psExe
+        $shortcut.Arguments        = $psArgs
+        $shortcut.WorkingDirectory = $env:USERPROFILE
+        $shortcut.IconLocation     = "$psExe,0"
+        $shortcut.Description      = 'Windows Utilities Installer (win_util)'
+        $shortcut.Save()
+
+        Write-Host "  [+] Created desktop shortcut: $shortcutPath" -ForegroundColor Green
+    } catch {
+        # Non-fatal: shortcut creation should never block the menu.
+        Write-Host "  [!] Could not create desktop shortcut: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+}
+
 #endregion
 
 #region --- CLI Helpers ---
@@ -807,6 +836,7 @@ if ($Check)     { Show-Banner; Invoke-CLICheck      $Check;     exit 0 }
 
 # Default: interactive menu
 Show-Banner
+New-DesktopShortcut
 Write-Host "  Loading utilities..." -ForegroundColor DarkGray
 $grouped = Get-UtilitiesByCategory
 Start-Menu $grouped
