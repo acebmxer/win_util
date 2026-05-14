@@ -29,6 +29,85 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+#region --- Self-elevation ---
+
+function Test-IsAdmin {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    return ([Security.Principal.WindowsPrincipal]$id).IsInRole(
+        [Security.Principal.WindowsBuiltinRole]::Administrator)
+}
+
+function Get-ForwardArgs {
+    # Reconstructs a CLI-style argument list from both bound named parameters
+    # ($PSBoundParameters) and any unbound positional/double-dash args ($args).
+    # Quotes values that contain whitespace so they survive the relaunch.
+    param([hashtable]$Bound, [object[]]$Extra)
+
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($k in $Bound.Keys) {
+        $v = $Bound[$k]
+        if ($v -is [switch]) {
+            if ($v.IsPresent) { $out.Add("-$k") }
+        } else {
+            $out.Add("-$k")
+            $sv = "$v"
+            if ($sv -match '\s') { $out.Add('"' + ($sv -replace '"','`"') + '"') }
+            else                 { $out.Add($sv) }
+        }
+    }
+    if ($Extra) {
+        foreach ($a in $Extra) {
+            $sa = "$a"
+            if ($sa -match '\s') { $out.Add('"' + ($sa -replace '"','`"') + '"') }
+            else                 { $out.Add($sa) }
+        }
+    }
+    return $out.ToArray()
+}
+
+function Invoke-SelfElevate {
+    # Relaunches the current script elevated. When invoked from a file on disk
+    # (PSCommandPath set), relaunches that same file with the same args. When
+    # invoked via `irm | iex` (no PSCommandPath), re-fetches the dist script in
+    # the elevated process. Exits the current (non-elevated) process on success.
+    param([string[]]$ForwardArgs)
+
+    $psExe = (Get-Process -Id $PID).Path
+    if (-not $psExe) {
+        $psExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    }
+
+    $fromFile = $PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)
+
+    if ($fromFile) {
+        $argList = @('-NoExit','-NoProfile','-ExecutionPolicy','Bypass','-File', $PSCommandPath)
+        if ($ForwardArgs) { $argList += $ForwardArgs }
+    } else {
+        $url = 'https://raw.githubusercontent.com/acebmxer/win_util/main/dist/win_util.ps1'
+        $cmd = "& ([scriptblock]::Create((irm '$url')))"
+        $argList = @('-NoExit','-NoProfile','-ExecutionPolicy','Bypass','-Command', $cmd)
+    }
+
+    try {
+        Start-Process -FilePath $psExe -ArgumentList $argList -Verb RunAs -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Host "  [ERROR] Elevation was declined or failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "  win_util needs administrator rights to install software via winget." -ForegroundColor Red
+        Write-Host "  Right-click PowerShell and choose 'Run as administrator', then try again." -ForegroundColor Red
+        exit 1
+    }
+    exit 0
+}
+
+if (-not (Test-IsAdmin)) {
+    Write-Host ""
+    Write-Host "  win_util requires administrator privileges. Relaunching elevated..." -ForegroundColor Yellow
+    $fwd = Get-ForwardArgs -Bound $PSBoundParameters -Extra $args
+    Invoke-SelfElevate -ForwardArgs $fwd
+}
+
+#endregion
+
 
 #region --- logging ---
 # Logging module for win_util
@@ -1201,7 +1280,8 @@ function Start-Menu {
                                 if ($s.Selected[$u.Id] -and -not $u['_Installed']) { $allInstalled = $false }
                             }
                         }
-                        Invoke-Operation (if ($allInstalled) { 'uninstall' } else { 'install' })
+                        $op = if ($allInstalled) { 'uninstall' } else { 'install' }
+                        Invoke-Operation $op
                     } else {
                         $s.StatusMessage = "Select items with [SPACE] first, or pick a Profile."
                         $s.StatusColor   = $FY
@@ -1282,6 +1362,22 @@ function Sync-DesktopIcon {
     }
 }
 
+function Set-ShortcutRunAsAdmin {
+    # Flips bit 0x20 of the .lnk flags byte at offset 0x15 to mark the shortcut
+    # as "Run as administrator". The WScript.Shell COM API doesn't expose this
+    # property, so the .lnk has to be edited in place after Save().
+    param([string]$Path)
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        if ($bytes.Length -gt 0x15 -and -not ($bytes[0x15] -band 0x20)) {
+            $bytes[0x15] = $bytes[0x15] -bor 0x20
+            [System.IO.File]::WriteAllBytes($Path, $bytes)
+        }
+    } catch {
+        # Non-fatal: the shortcut still works, it just won't auto-elevate.
+    }
+}
+
 function New-DesktopShortcut {
     # Silently creates a "Win Util" desktop shortcut and keeps its icon in sync
     # with the upstream copy. Used so `irm .../win_util.ps1 | iex` self-installs.
@@ -1312,6 +1408,9 @@ function New-DesktopShortcut {
                 $existing.IconLocation = $desired
                 $existing.Save()
             }
+            # Ensure pre-existing shortcuts (from older win_util versions) also
+            # get the Run-as-admin flag so users don't have to recreate them.
+            Set-ShortcutRunAsAdmin $shortcutPath
             return
         }
 
@@ -1322,6 +1421,7 @@ function New-DesktopShortcut {
         $shortcut.IconLocation     = if ($iconLoc) { $iconLoc } else { "$psExe,0" }
         $shortcut.Description      = 'Windows Utilities Installer (win_util)'
         $shortcut.Save()
+        Set-ShortcutRunAsAdmin $shortcutPath
 
         Write-Host "  [+] Created desktop shortcut: $shortcutPath" -ForegroundColor Green
     } catch {
