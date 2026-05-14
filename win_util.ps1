@@ -45,12 +45,13 @@ function Show-Banner {
 }
 
 # COMPILE:SKIP:BEGIN
-function Import-Libs {
-    . (Join-Path $ROOT "lib\logging.ps1")
-    . (Join-Path $ROOT "lib\utilities.ps1")
-    . (Join-Path $ROOT "lib\installers.ps1")
-    . (Join-Path $ROOT "lib\menu.ps1")
-}
+# Dot-source at script scope so the lib functions are visible to the rest of the file.
+# Wrapping these in a function would scope the definitions to that function and they would
+# disappear on return, causing "Initialize-Logging not recognized" at the entry point.
+. (Join-Path $ROOT "lib\logging.ps1")
+. (Join-Path $ROOT "lib\utilities.ps1")
+. (Join-Path $ROOT "lib\installers.ps1")
+. (Join-Path $ROOT "lib\menu.ps1")
 # COMPILE:SKIP:END
 
 function Assert-Winget {
@@ -169,9 +170,6 @@ function Invoke-CLICheck {
 
 #region --- Entry Point ---
 
-# COMPILE:SKIP:BEGIN
-Import-Libs
-# COMPILE:SKIP:END
 Initialize-Logging
 Assert-Winget
 
