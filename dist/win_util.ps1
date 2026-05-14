@@ -267,6 +267,91 @@ function Get-WingetVersion {
     return $null
 }
 
+# Single-shot bulk scan: one 'winget list' call returns every installed package.
+# Build a map of Id -> Version so the menu can look up status without spawning a
+# winget process per utility (which is the cause of the multi-minute startup).
+# Returns $null if winget is unavailable or the output can't be parsed.
+function Get-WingetInstalledMap {
+    if (-not (Test-WingetAvailable)) { return $null }
+
+    $lines = winget list --accept-source-agreements 2>&1 | ForEach-Object { [string]$_ }
+    if (-not $lines) { return @{} }
+
+    # Find the header row ("Name  Id  Version  ...") and the underline row beneath it.
+    # Column boundaries come from the underline's run lengths; this is the same
+    # trick used by other winget parsers and is resilient to localized headers.
+    $headerIdx = -1
+    for ($i = 0; $i -lt $lines.Count - 1; $i++) {
+        if ($lines[$i + 1] -match '^-{3,}') { $headerIdx = $i; break }
+    }
+    if ($headerIdx -lt 0) { return @{} }
+
+    $header = $lines[$headerIdx]
+
+    # winget's underline is a single unbroken run of dashes, so we can't use it
+    # to find column boundaries. Derive them from the header instead: each
+    # column starts at a non-space character that follows whitespace.
+    $cols = [System.Collections.Generic.List[hashtable]]::new()
+    $inWord = $false
+    $wordStart = 0
+    $wordChars = [System.Text.StringBuilder]::new()
+    for ($i = 0; $i -lt $header.Length; $i++) {
+        $ch = $header[$i]
+        if ($ch -ne ' ' -and -not $inWord) {
+            $inWord = $true
+            $wordStart = $i
+            [void]$wordChars.Clear()
+            [void]$wordChars.Append($ch)
+        } elseif ($ch -ne ' ' -and $inWord) {
+            [void]$wordChars.Append($ch)
+        } elseif ($ch -eq ' ' -and $inWord) {
+            $cols.Add(@{ Start = $wordStart; Name = $wordChars.ToString() })
+            $inWord = $false
+        }
+    }
+    if ($inWord) { $cols.Add(@{ Start = $wordStart; Name = $wordChars.ToString() }) }
+    if ($cols.Count -lt 3) { return @{} }
+
+    # Fill in Length for each column = (next column's Start) - this Start.
+    # Last column extends to end of line.
+    for ($c = 0; $c -lt $cols.Count - 1; $c++) {
+        $cols[$c].Length = $cols[$c + 1].Start - $cols[$c].Start
+    }
+    $cols[$cols.Count - 1].Length = [int]::MaxValue
+
+    $idCol  = -1
+    $verCol = -1
+    for ($c = 0; $c -lt $cols.Count; $c++) {
+        if ($cols[$c].Name -ieq 'Id')      { $idCol  = $c }
+        elseif ($cols[$c].Name -ieq 'Version') { $verCol = $c }
+    }
+    if ($idCol -lt 0 -or $verCol -lt 0) { return @{} }
+
+    $map = @{}
+    for ($r = $headerIdx + 2; $r -lt $lines.Count; $r++) {
+        $row = $lines[$r]
+        if ([string]::IsNullOrWhiteSpace($row)) { continue }
+        # Skip progress / spinner / status lines that don't span all columns.
+        if ($row.Length -lt $cols[$idCol].Start) { continue }
+
+        $idStart = $cols[$idCol].Start
+        $idLen   = [Math]::Min($cols[$idCol].Length, $row.Length - $idStart)
+        if ($idLen -le 0) { continue }
+        $id = $row.Substring($idStart, $idLen).Trim()
+        if (-not $id) { continue }
+
+        $verStart = $cols[$verCol].Start
+        $version  = $null
+        if ($row.Length -gt $verStart) {
+            $verLen = [Math]::Min($cols[$verCol].Length, $row.Length - $verStart)
+            if ($verLen -gt 0) { $version = $row.Substring($verStart, $verLen).Trim() }
+        }
+
+        $map[$id] = $version
+    }
+    return $map
+}
+
 function Invoke-WingetInstall {
     param([string]$Id)
     Write-LogInfo "Installing $Id via winget"
@@ -972,12 +1057,10 @@ function Initialize-MenuState {
     $s.StatusMessage = "Checking installed status..."
     $s.StatusColor   = $FY
 
+    $map = Get-WingetInstalledMap
     foreach ($cat in $s.Categories) {
         foreach ($util in $ByCategory[$cat]) {
-            $fns  = Get-UtilityFunctions $util
-            $inst = if ($fns.Test) { & $fns.Test } else { $false }
-            $util['_Installed'] = $inst
-            $util['_Version']   = if ($inst -and $fns.GetVersion) { & $fns.GetVersion } else { $null }
+            Update-UtilityStatus $util $map
             $s.Selected[$util.Id] = $false
         }
     }
@@ -1358,10 +1441,9 @@ function Invoke-Operation {
     Write-Host "  Press any key to return to the menu..."
     $null = [Console]::ReadKey($true)
 
+    $map = Get-WingetInstalledMap
     foreach ($util in $toProcess) {
-        $fns = Get-UtilityFunctions $util
-        if ($fns.Test) { $util['_Installed'] = & $fns.Test }
-        if ($util['_Installed'] -and $fns.GetVersion) { $util['_Version'] = & $fns.GetVersion }
+        Update-UtilityStatus $util $map
         $s.Selected[$util.Id] = $false
     }
 
@@ -1405,16 +1487,43 @@ function Update-MenuStatus {
     $s.StatusColor   = $FY
     Show-Frame
 
+    $map = Get-WingetInstalledMap
     foreach ($cat in $s.Categories) {
         foreach ($util in $s.ByCategory[$cat]) {
-            $fns = Get-UtilityFunctions $util
-            if ($fns.Test) { $util['_Installed'] = & $fns.Test }
-            if ($util['_Installed'] -and $fns.GetVersion) { $util['_Version'] = & $fns.GetVersion }
+            Update-UtilityStatus $util $map
         }
     }
     $s.SysInfo = Get-SystemInfo
     $s.StatusMessage = "Status refreshed."
     $s.StatusColor   = $FG
+}
+
+# Resolve a single utility's installed/version state. If $Map (from
+# Get-WingetInstalledMap) is provided, look the Id up there -no per-utility
+# winget process. Falls back to per-utility scriptblocks when the utility has
+# custom Test-/Get-Version overrides, or when the bulk scan failed.
+function Update-UtilityStatus {
+    param([hashtable]$Utility, [hashtable]$Map)
+
+    $safeName = $Utility.Name -replace '[^A-Za-z0-9]', ''
+    $hasCustomTest    = $null -ne (Get-Command "Test-$safeName"         -ErrorAction SilentlyContinue)
+    $hasCustomVersion = $null -ne (Get-Command "Get-${safeName}Version" -ErrorAction SilentlyContinue)
+
+    if ($null -ne $Map -and -not $hasCustomTest -and -not $hasCustomVersion) {
+        if ($Map.ContainsKey($Utility.Id)) {
+            $Utility['_Installed'] = $true
+            $Utility['_Version']   = $Map[$Utility.Id]
+        } else {
+            $Utility['_Installed'] = $false
+            $Utility['_Version']   = $null
+        }
+        return
+    }
+
+    $fns  = Get-UtilityFunctions $Utility
+    $inst = if ($fns.Test) { & $fns.Test } else { $false }
+    $Utility['_Installed'] = $inst
+    $Utility['_Version']   = if ($inst -and $fns.GetVersion) { & $fns.GetVersion } else { $null }
 }
 
 #endregion

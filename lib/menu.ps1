@@ -143,12 +143,10 @@ function Initialize-MenuState {
     $s.StatusMessage = "Checking installed status..."
     $s.StatusColor   = $FY
 
+    $map = Get-WingetInstalledMap
     foreach ($cat in $s.Categories) {
         foreach ($util in $ByCategory[$cat]) {
-            $fns  = Get-UtilityFunctions $util
-            $inst = if ($fns.Test) { & $fns.Test } else { $false }
-            $util['_Installed'] = $inst
-            $util['_Version']   = if ($inst -and $fns.GetVersion) { & $fns.GetVersion } else { $null }
+            Update-UtilityStatus $util $map
             $s.Selected[$util.Id] = $false
         }
     }
@@ -529,10 +527,9 @@ function Invoke-Operation {
     Write-Host "  Press any key to return to the menu..."
     $null = [Console]::ReadKey($true)
 
+    $map = Get-WingetInstalledMap
     foreach ($util in $toProcess) {
-        $fns = Get-UtilityFunctions $util
-        if ($fns.Test) { $util['_Installed'] = & $fns.Test }
-        if ($util['_Installed'] -and $fns.GetVersion) { $util['_Version'] = & $fns.GetVersion }
+        Update-UtilityStatus $util $map
         $s.Selected[$util.Id] = $false
     }
 
@@ -576,16 +573,43 @@ function Update-MenuStatus {
     $s.StatusColor   = $FY
     Show-Frame
 
+    $map = Get-WingetInstalledMap
     foreach ($cat in $s.Categories) {
         foreach ($util in $s.ByCategory[$cat]) {
-            $fns = Get-UtilityFunctions $util
-            if ($fns.Test) { $util['_Installed'] = & $fns.Test }
-            if ($util['_Installed'] -and $fns.GetVersion) { $util['_Version'] = & $fns.GetVersion }
+            Update-UtilityStatus $util $map
         }
     }
     $s.SysInfo = Get-SystemInfo
     $s.StatusMessage = "Status refreshed."
     $s.StatusColor   = $FG
+}
+
+# Resolve a single utility's installed/version state. If $Map (from
+# Get-WingetInstalledMap) is provided, look the Id up there -no per-utility
+# winget process. Falls back to per-utility scriptblocks when the utility has
+# custom Test-/Get-Version overrides, or when the bulk scan failed.
+function Update-UtilityStatus {
+    param([hashtable]$Utility, [hashtable]$Map)
+
+    $safeName = $Utility.Name -replace '[^A-Za-z0-9]', ''
+    $hasCustomTest    = $null -ne (Get-Command "Test-$safeName"         -ErrorAction SilentlyContinue)
+    $hasCustomVersion = $null -ne (Get-Command "Get-${safeName}Version" -ErrorAction SilentlyContinue)
+
+    if ($null -ne $Map -and -not $hasCustomTest -and -not $hasCustomVersion) {
+        if ($Map.ContainsKey($Utility.Id)) {
+            $Utility['_Installed'] = $true
+            $Utility['_Version']   = $Map[$Utility.Id]
+        } else {
+            $Utility['_Installed'] = $false
+            $Utility['_Version']   = $null
+        }
+        return
+    }
+
+    $fns  = Get-UtilityFunctions $Utility
+    $inst = if ($fns.Test) { & $fns.Test } else { $false }
+    $Utility['_Installed'] = $inst
+    $Utility['_Version']   = if ($inst -and $fns.GetVersion) { & $fns.GetVersion } else { $null }
 }
 
 #endregion
