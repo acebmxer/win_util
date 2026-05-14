@@ -21,7 +21,7 @@ function Write-Line { param([string]$L) [void]$sb.AppendLine($L) }
 function Write-FileStripped {
     param([string]$Path)
     $skipping = $false
-    foreach ($line in (Get-Content $Path)) {
+    foreach ($line in (Get-Content -Path $Path -Encoding UTF8)) {
         if ($line -match '#\s*COMPILE:SKIP:BEGIN')  { $skipping = $true;  continue }
         if ($line -match '#\s*COMPILE:SKIP:END')    { $skipping = $false; continue }
         if ($skipping)                              { continue }
@@ -39,7 +39,7 @@ function Write-Lib {
 }
 
 # ── 1. Preamble: win_util.ps1 up to (but not including) COMPILE:INSERT:LIBS ──
-foreach ($line in (Get-Content (Join-Path $ROOT "win_util.ps1"))) {
+foreach ($line in (Get-Content -Path (Join-Path $ROOT "win_util.ps1") -Encoding UTF8)) {
     if ($line -match '#\s*COMPILE:INSERT:LIBS') { break }
     if ($line -match '#\s*COMPILE:SKIP\b')      { continue }
     Write-Line $line
@@ -47,9 +47,11 @@ foreach ($line in (Get-Content (Join-Path $ROOT "win_util.ps1"))) {
 
 # ── 2. Lib files inlined in dependency order ──
 Write-Lib "lib\logging.ps1"        "logging"
+Write-Lib "lib\sysinfo.ps1"        "sysinfo"
 Write-Lib "lib\utilities.ps1"      "utilities"
 Write-Lib "lib\installers.ps1"     "installers"
 Write-Lib "lib\utilities-list.ps1" "utilities-list"
+Write-Lib "lib\profiles.ps1"       "profiles"
 Write-Lib "lib\menu.ps1"           "menu"
 
 # ── 3. Body: rest of win_util.ps1 with COMPILE:SKIP blocks removed ──
@@ -58,7 +60,7 @@ Write-Line "#region --- main ---"
 
 $capturing = $false
 $skipping  = $false
-foreach ($line in (Get-Content (Join-Path $ROOT "win_util.ps1"))) {
+foreach ($line in (Get-Content -Path (Join-Path $ROOT "win_util.ps1") -Encoding UTF8)) {
     if (-not $capturing) {
         if ($line -match '#\s*COMPILE:INSERT:LIBS') { $capturing = $true }
         continue
@@ -73,7 +75,10 @@ foreach ($line in (Get-Content (Join-Path $ROOT "win_util.ps1"))) {
 Write-Line "#endregion"
 
 # ── Write output ──
-[System.IO.File]::WriteAllText($OUT, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
+# Write with a UTF-8 BOM so Windows PowerShell 5.1 detects encoding correctly
+# (without a BOM, PS 5.1 falls back to the system ANSI codepage and corrupts
+# non-ASCII characters). The BOM is harmless for `irm | iex` consumption.
+[System.IO.File]::WriteAllText($OUT, $sb.ToString(), [System.Text.UTF8Encoding]::new($true))
 
 Write-Host ""
 Write-Host "  Compiled -> $OUT" -ForegroundColor Green

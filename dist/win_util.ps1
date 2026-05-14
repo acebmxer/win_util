@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Windows Utilities Installer - interactive multi-select TUI for installing,
     uninstalling, and updating common Windows software via winget.
@@ -20,6 +20,9 @@ param(
     [switch] $UpdateAll,
     [switch] $List,
     [string] $Check       = "",
+    [string] $ApplyProfile = "",
+    [switch] $ListProfiles,
+    [switch] $SysInfo,
     [switch] $Help
 )
 
@@ -78,6 +81,84 @@ function Write-LogSummary {
 }
 #endregion
 
+#region --- sysinfo ---
+# System information helpers for the menu sidebar.
+#
+# Get-SystemInfo returns a hashtable with short, sidebar-friendly strings:
+#   Host, OS, Kernel, CPU, Mem, Disk, Uptime
+# All lookups are wrapped in try/catch and default to "Unknown" so a missing
+# WMI provider never blocks the menu from rendering.
+
+function Format-Bytes {
+    param([double]$Bytes, [int]$Digits = 1)
+    if ($Bytes -ge 1TB) { return ("{0:N$Digits}T" -f ($Bytes / 1TB)) }
+    if ($Bytes -ge 1GB) { return ("{0:N$Digits}G" -f ($Bytes / 1GB)) }
+    if ($Bytes -ge 1MB) { return ("{0:N$Digits}M" -f ($Bytes / 1MB)) }
+    return ("{0:N0}B" -f $Bytes)
+}
+
+function Get-SystemInfo {
+    $info = [ordered]@{
+        Host   = "Unknown"
+        OS     = "Unknown"
+        Kernel = "Unknown"
+        CPU    = "Unknown"
+        Mem    = "Unknown"
+        Disk   = "Unknown"
+        Uptime = "Unknown"
+    }
+
+    try { $info.Host = [Environment]::MachineName } catch {}
+
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+        $caption = ($os.Caption -replace '^Microsoft\s+', '').Trim()
+        $info.OS     = $caption
+        $info.Kernel = $os.Version
+        try {
+            $boot   = $os.LastBootUpTime
+            $span   = (Get-Date) - $boot
+            $info.Uptime = if ($span.Days -gt 0) {
+                "{0}d {1}h" -f $span.Days, $span.Hours
+            } elseif ($span.Hours -gt 0) {
+                "{0}h {1}m" -f $span.Hours, $span.Minutes
+            } else {
+                "{0}m" -f $span.Minutes
+            }
+        } catch {}
+
+        $totalBytes = [double]$os.TotalVisibleMemorySize * 1KB
+        $freeBytes  = [double]$os.FreePhysicalMemory     * 1KB
+        $usedBytes  = $totalBytes - $freeBytes
+        $info.Mem   = "{0}/{1}" -f (Format-Bytes $usedBytes), (Format-Bytes $totalBytes)
+    } catch {}
+
+    try {
+        $cpu  = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
+        $name = $cpu.Name
+        # Tidy common patterns to fit a narrow sidebar
+        $name = $name -replace '\(R\)|\(TM\)', ''
+        $name = $name -replace '\s+CPU\s+@.*$', ''
+        $name = $name -replace 'Intel Core ', ''
+        $name = $name -replace 'AMD Ryzen ', 'Ryzen '
+        $info.CPU = $name.Trim()
+    } catch {}
+
+    try {
+        $sysDrive = ($env:SystemDrive).TrimEnd(':')
+        $vol = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$($env:SystemDrive)'" -ErrorAction Stop
+        if ($vol) {
+            $size = [double]$vol.Size
+            $free = [double]$vol.FreeSpace
+            $used = $size - $free
+            $info.Disk = "{0}/{1} ({2}:)" -f (Format-Bytes $used), (Format-Bytes $size), $sysDrive
+        }
+    } catch {}
+
+    return $info
+}
+#endregion
+
 #region --- utilities ---
 # Shared helper functions for win_util
 
@@ -127,7 +208,7 @@ function Invoke-WingetUpdate {
 #endregion
 
 #region --- installers ---
-# Utility registry — defines Register-Utility and standard winget wrappers
+# Utility registry -defines Register-Utility and standard winget wrappers
 
 $script:Registry = [System.Collections.Generic.List[hashtable]]::new()
 
@@ -179,24 +260,252 @@ function Get-UtilityFunctions {
 #endregion
 
 #region --- utilities-list ---
-# All registered utilities — add a Register-Utility line here to add a new tool.
+# All registered utilities -add a Register-Utility line to add a new tool.
 # Custom install/uninstall/update/test logic: define Install-SafeName, etc. anywhere in the loaded files.
+#
+# Fields: Name, Id (winget package id), Category, Description (one-line)
 
-Register-Utility @{ Name = "Google Chrome";            Id = "Google.Chrome";                   Category = "Browsers" }
+# ── Browsers ──────────────────────────────────────────────────────────────
+Register-Utility @{ Name = "Google Chrome";            Id = "Google.Chrome";                          Category = "Browsers";    Description = "Google's browser with sync and developer tools" }
+Register-Utility @{ Name = "Mozilla Firefox";          Id = "Mozilla.Firefox";                        Category = "Browsers";    Description = "Mozilla's open-source browser" }
+Register-Utility @{ Name = "Microsoft Edge";           Id = "Microsoft.Edge";                         Category = "Browsers";    Description = "Microsoft's Chromium-based browser" }
+Register-Utility @{ Name = "Brave Browser";            Id = "Brave.Brave";                            Category = "Browsers";    Description = "Privacy-focused Chromium browser with built-in ad blocking" }
+Register-Utility @{ Name = "Vivaldi";                  Id = "Vivaldi.Vivaldi";                        Category = "Browsers";    Description = "Highly customizable Chromium browser" }
+Register-Utility @{ Name = "LibreWolf";                Id = "LibreWolf.LibreWolf";                    Category = "Browsers";    Description = "Privacy-hardened Firefox fork" }
+Register-Utility @{ Name = "Tor Browser";              Id = "TorProject.TorBrowser";                  Category = "Browsers";    Description = "Anonymous browsing via the Tor network" }
 
-Register-Utility @{ Name = "7-Zip";                    Id = "7zip.7zip";                       Category = "Tools"    }
+# ── Development ───────────────────────────────────────────────────────────
+Register-Utility @{ Name = "Visual Studio Code";       Id = "Microsoft.VisualStudioCode";             Category = "Development"; Description = "Microsoft's extensible code editor" }
+Register-Utility @{ Name = "Cursor";                   Id = "Anysphere.Cursor";                       Category = "Development"; Description = "AI-powered code editor built on VS Code" }
+Register-Utility @{ Name = "Git";                      Id = "Git.Git";                                Category = "Development"; Description = "Distributed version control system" }
+Register-Utility @{ Name = "GitHub CLI";               Id = "GitHub.cli";                             Category = "Development"; Description = "Official CLI for GitHub -repos, issues, PRs, workflows" }
+Register-Utility @{ Name = "GitHub Desktop";           Id = "GitHub.GitHubDesktop";                   Category = "Development"; Description = "GUI client for managing GitHub repositories" }
+Register-Utility @{ Name = "Docker Desktop";           Id = "Docker.DockerDesktop";                   Category = "Development"; Description = "Container platform for Windows with WSL2 backend" }
+Register-Utility @{ Name = "Node.js LTS";              Id = "OpenJS.NodeJS.LTS";                      Category = "Development"; Description = "JavaScript runtime -LTS release" }
+Register-Utility @{ Name = "Python 3";                 Id = "Python.Python.3.12";                     Category = "Development"; Description = "Python programming language runtime" }
+Register-Utility @{ Name = "Go SDK";                   Id = "GoLang.Go";                              Category = "Development"; Description = "Official Go programming language toolchain" }
+Register-Utility @{ Name = "Rustup";                   Id = "Rustlang.Rustup";                        Category = "Development"; Description = "Rust toolchain installer and version manager" }
+Register-Utility @{ Name = "Neovim";                   Id = "Neovim.Neovim";                          Category = "Development"; Description = "Extensible Vim-based text editor" }
+Register-Utility @{ Name = "Windows Terminal";         Id = "Microsoft.WindowsTerminal";              Category = "Development"; Description = "Modern terminal emulator with tabs and profiles" }
+Register-Utility @{ Name = "PowerShell 7";             Id = "Microsoft.PowerShell";                   Category = "Development"; Description = "Cross-platform PowerShell (pwsh)" }
+Register-Utility @{ Name = "DBeaver";                  Id = "dbeaver.dbeaver";                        Category = "Development"; Description = "Universal database management tool" }
+Register-Utility @{ Name = "Postman";                  Id = "Postman.Postman";                        Category = "Development"; Description = "API development and testing platform" }
+Register-Utility @{ Name = "JetBrains Toolbox";        Id = "JetBrains.Toolbox";                      Category = "Development"; Description = "Manager for JetBrains IDEs" }
 
-Register-Utility @{ Name = "VLC Media Player";         Id = "VideoLAN.VLC";                    Category = "Media"    }
+# ── Internet / Communication ──────────────────────────────────────────────
+Register-Utility @{ Name = "Discord";                  Id = "Discord.Discord";                        Category = "Internet";    Description = "Voice, video, and text communication platform" }
+Register-Utility @{ Name = "Slack";                    Id = "SlackTechnologies.Slack";                Category = "Internet";    Description = "Team messaging and collaboration platform" }
+Register-Utility @{ Name = "Microsoft Teams";          Id = "Microsoft.Teams";                        Category = "Internet";    Description = "Workplace chat, meetings, and collaboration" }
+Register-Utility @{ Name = "Zoom";                     Id = "Zoom.Zoom";                              Category = "Internet";    Description = "Video conferencing and collaboration platform" }
+Register-Utility @{ Name = "Signal";                   Id = "OpenWhisperSystems.Signal";              Category = "Internet";    Description = "End-to-end encrypted messaging" }
+Register-Utility @{ Name = "Telegram";                 Id = "Telegram.TelegramDesktop";               Category = "Internet";    Description = "Cloud-based messaging with groups and channels" }
+Register-Utility @{ Name = "Thunderbird";              Id = "Mozilla.Thunderbird";                    Category = "Internet";    Description = "Mozilla's email client with calendar and PGP" }
+Register-Utility @{ Name = "FileZilla";                Id = "TimKosse.FileZilla.Client";              Category = "Internet";    Description = "FTP, FTPS, and SFTP client" }
+Register-Utility @{ Name = "qBittorrent";              Id = "qBittorrent.qBittorrent";                Category = "Internet";    Description = "Open-source BitTorrent client" }
+Register-Utility @{ Name = "ProtonVPN";                Id = "Proton.ProtonVPN";                       Category = "Internet";    Description = "Free and open-source VPN by Proton" }
+Register-Utility @{ Name = "Tailscale";                Id = "tailscale.tailscale";                    Category = "Internet";    Description = "Zero-config mesh VPN built on WireGuard" }
+Register-Utility @{ Name = "AnyDesk";                  Id = "AnyDeskSoftwareGmbH.AnyDesk";            Category = "Internet";    Description = "Remote desktop application" }
+Register-Utility @{ Name = "RustDesk";                 Id = "RustDesk.RustDesk";                      Category = "Internet";    Description = "Open-source remote desktop and remote assistance tool" }
 
-Register-Utility @{ Name = "Java Runtime Environment"; Id = "Oracle.JavaRuntimeEnvironment";   Category = "Runtimes" }
+# ── Media ─────────────────────────────────────────────────────────────────
+Register-Utility @{ Name = "VLC Media Player";         Id = "VideoLAN.VLC";                           Category = "Media";       Description = "Versatile media player supporting virtually all formats" }
+Register-Utility @{ Name = "Spotify";                  Id = "Spotify.Spotify";                        Category = "Media";       Description = "Music streaming service" }
+Register-Utility @{ Name = "OBS Studio";               Id = "OBSProject.OBSStudio";                   Category = "Media";       Description = "Video recording and live streaming" }
+Register-Utility @{ Name = "Audacity";                 Id = "Audacity.Audacity";                      Category = "Media";       Description = "Open-source audio editor and recorder" }
+Register-Utility @{ Name = "HandBrake";                Id = "HandBrake.HandBrake";                    Category = "Media";       Description = "Open-source video transcoder" }
+Register-Utility @{ Name = "GIMP";                     Id = "GIMP.GIMP";                              Category = "Media";       Description = "GNU Image Manipulation Program" }
+Register-Utility @{ Name = "Inkscape";                 Id = "Inkscape.Inkscape";                      Category = "Media";       Description = "Professional vector graphics editor" }
+Register-Utility @{ Name = "Krita";                    Id = "KDE.Krita";                              Category = "Media";       Description = "Professional digital painting application" }
+Register-Utility @{ Name = "Blender";                  Id = "BlenderFoundation.Blender";              Category = "Media";       Description = "Open-source 3D creation suite" }
 
-Register-Utility @{ Name = "VCRedist 2015+ x64";       Id = "Microsoft.VCRedist.2015+.x64";   Category = "System"   }
+# ── Productivity ──────────────────────────────────────────────────────────
+Register-Utility @{ Name = "LibreOffice";              Id = "TheDocumentFoundation.LibreOffice";      Category = "Productivity"; Description = "Open-source office suite" }
+Register-Utility @{ Name = "OnlyOffice";               Id = "ONLYOFFICE.DesktopEditors";              Category = "Productivity"; Description = "Office suite with MS Office format compatibility" }
+Register-Utility @{ Name = "Notepad++";                Id = "Notepad++.Notepad++";                    Category = "Productivity"; Description = "Source-code editor with syntax highlighting" }
+Register-Utility @{ Name = "Obsidian";                 Id = "Obsidian.Obsidian";                      Category = "Productivity"; Description = "Markdown-based knowledge base with graphs and plugins" }
+Register-Utility @{ Name = "Joplin";                   Id = "JoplinApp.Joplin";                       Category = "Productivity"; Description = "Note-taking app with Markdown and sync" }
+Register-Utility @{ Name = "Logseq";                   Id = "Logseq.Logseq";                          Category = "Productivity"; Description = "Privacy-first knowledge management and outliner" }
+Register-Utility @{ Name = "Bitwarden";                Id = "Bitwarden.Bitwarden";                    Category = "Productivity"; Description = "Open-source password manager" }
+Register-Utility @{ Name = "Nextcloud Desktop";        Id = "Nextcloud.NextcloudDesktop";             Category = "Productivity"; Description = "Sync client for self-hosted Nextcloud storage" }
+Register-Utility @{ Name = "ShareX";                   Id = "ShareX.ShareX";                          Category = "Productivity"; Description = "Screenshot and screen recording tool" }
+
+# ── Gaming ────────────────────────────────────────────────────────────────
+Register-Utility @{ Name = "Steam";                    Id = "Valve.Steam";                            Category = "Gaming";      Description = "Valve's gaming platform" }
+Register-Utility @{ Name = "Epic Games Launcher";      Id = "EpicGames.EpicGamesLauncher";            Category = "Gaming";      Description = "Epic Games store and launcher" }
+Register-Utility @{ Name = "GOG Galaxy";               Id = "GOG.Galaxy";                             Category = "Gaming";      Description = "GOG.com client and unified game library" }
+Register-Utility @{ Name = "Heroic Games Launcher";    Id = "HeroicGamesLauncher.HeroicGamesLauncher"; Category = "Gaming";     Description = "Open-source launcher for Epic, GOG, and Amazon Prime Gaming" }
+Register-Utility @{ Name = "Ubisoft Connect";          Id = "Ubisoft.Connect";                        Category = "Gaming";      Description = "Ubisoft's game launcher and store" }
+Register-Utility @{ Name = "Battle.net";               Id = "Blizzard.BattleNet";                     Category = "Gaming";      Description = "Blizzard's game launcher and store" }
+
+# ── System Tools ──────────────────────────────────────────────────────────
+Register-Utility @{ Name = "7-Zip";                    Id = "7zip.7zip";                              Category = "System Tools"; Description = "File archiver with high compression ratio" }
+Register-Utility @{ Name = "WinRAR";                   Id = "RARLab.WinRAR";                          Category = "System Tools"; Description = "Archive manager for RAR and ZIP files" }
+Register-Utility @{ Name = "PowerToys";                Id = "Microsoft.PowerToys";                    Category = "System Tools"; Description = "Microsoft's productivity utilities (FancyZones, PowerRename, etc.)" }
+Register-Utility @{ Name = "Sysinternals Suite";       Id = "Microsoft.Sysinternals.Suite";           Category = "System Tools"; Description = "Microsoft's collection of Windows diagnostic utilities" }
+Register-Utility @{ Name = "Everything";               Id = "voidtools.Everything";                   Category = "System Tools"; Description = "Instant file and folder search by name" }
+Register-Utility @{ Name = "WizTree";                  Id = "AntibodySoftware.WizTree";               Category = "System Tools"; Description = "Fast disk space analyzer reading the MFT directly" }
+Register-Utility @{ Name = "WinDirStat";               Id = "WinDirStat.WinDirStat";                  Category = "System Tools"; Description = "Disk usage statistics and cleanup tool" }
+Register-Utility @{ Name = "CPU-Z";                    Id = "CPUID.CPU-Z";                            Category = "System Tools"; Description = "CPU, memory, and motherboard information utility" }
+Register-Utility @{ Name = "GPU-Z";                    Id = "TechPowerUp.GPU-Z";                      Category = "System Tools"; Description = "GPU information and monitoring utility" }
+Register-Utility @{ Name = "HWiNFO";                   Id = "REALiX.HWiNFO";                          Category = "System Tools"; Description = "Comprehensive hardware analysis and monitoring" }
+Register-Utility @{ Name = "Rufus";                    Id = "Rufus.Rufus";                            Category = "System Tools"; Description = "Create bootable USB drives from ISOs" }
+Register-Utility @{ Name = "Ventoy";                   Id = "Ventoy.Ventoy";                          Category = "System Tools"; Description = "Bootable USB tool -boot multiple ISOs from one drive" }
+
+# ── Runtimes ──────────────────────────────────────────────────────────────
+Register-Utility @{ Name = "Java Runtime Environment"; Id = "Oracle.JavaRuntimeEnvironment";          Category = "Runtimes";    Description = "Oracle Java Runtime Environment" }
+Register-Utility @{ Name = "OpenJDK 21";               Id = "Microsoft.OpenJDK.21";                   Category = "Runtimes";    Description = "Microsoft Build of OpenJDK 21 (LTS)" }
+Register-Utility @{ Name = ".NET 8 SDK";               Id = "Microsoft.DotNet.SDK.8";                 Category = "Runtimes";    Description = "Microsoft .NET 8 SDK" }
+Register-Utility @{ Name = "VCRedist 2015+ x64";       Id = "Microsoft.VCRedist.2015+.x64";           Category = "Runtimes";    Description = "Visual C++ Redistributable for 2015-2022 (x64)" }
+Register-Utility @{ Name = "DirectX End-User Runtime"; Id = "Microsoft.DirectX";                      Category = "Runtimes";    Description = "DirectX End-User Runtime web installer" }
+#endregion
+
+#region --- profiles ---
+# Profile registry -curated presets that pre-populate the install queue.
+#
+# Each profile is a hashtable with Name, Description, and Items (an array of
+# utility names that match Register-Utility entries). Profiles are applied
+# from the menu sidebar: focus PROFILES, choose one, and press Enter.
+
+$script:ProfileRegistry = [System.Collections.Generic.List[hashtable]]::new()
+
+function Register-Profile {
+    param([hashtable]$Definition)
+    $script:ProfileRegistry.Add($Definition)
+}
+
+function Get-AllProfiles {
+    return $script:ProfileRegistry
+}
+
+function Find-Profile {
+    param([string]$Name)
+    foreach ($p in $script:ProfileRegistry) {
+        if ($p.Name -ieq $Name) { return $p }
+    }
+    return $null
+}
+
+# Resolve a profile's item names against the live utility registry and
+# return matching utility hashtables. Names that don't resolve are ignored
+# silently -useful when a profile lists optional packages.
+function Resolve-ProfileItems {
+    param([hashtable]$Profile)
+    $resolved = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($name in $Profile.Items) {
+        foreach ($u in Get-AllUtilities) {
+            if ($u.Name -ieq $name) { $resolved.Add($u); break }
+        }
+    }
+    return $resolved
+}
+
+# ── Curated Profiles ──────────────────────────────────────────────────────
+
+Register-Profile @{
+    Name        = "Run Me First"
+    Description = "Baseline tools every Windows install benefits from"
+    Items       = @(
+        "7-Zip",
+        "PowerToys",
+        "Windows Terminal",
+        "Microsoft Edge"
+    )
+}
+
+Register-Profile @{
+    Name        = "Default Physical PC"
+    Description = "Desktop essentials - browser, archiver, media, system tools"
+    Items       = @(
+        "Google Chrome",
+        "7-Zip",
+        "VLC Media Player",
+        "PowerToys",
+        "Windows Terminal",
+        "Notepad++",
+        "ShareX",
+        "Everything",
+        "Spotify"
+    )
+}
+
+Register-Profile @{
+    Name        = "Developer Workstation"
+    Description = "Editors, runtimes, version control, and container tooling"
+    Items       = @(
+        "Visual Studio Code",
+        "Git",
+        "GitHub CLI",
+        "Windows Terminal",
+        "PowerShell 7",
+        "Docker Desktop",
+        "Node.js LTS",
+        "Python 3",
+        "Postman",
+        "DBeaver",
+        "7-Zip",
+        "PowerToys"
+    )
+}
+
+Register-Profile @{
+    Name        = "Home Desktop"
+    Description = "Browser, office, messaging, media, and privacy tools"
+    Items       = @(
+        "Mozilla Firefox",
+        "Thunderbird",
+        "LibreOffice",
+        "VLC Media Player",
+        "Signal",
+        "Bitwarden",
+        "qBittorrent",
+        "ProtonVPN",
+        "Obsidian",
+        "7-Zip",
+        "ShareX"
+    )
+}
+
+Register-Profile @{
+    Name        = "Gaming Rig"
+    Description = "Game launchers, voice chat, and performance tools"
+    Items       = @(
+        "Steam",
+        "Epic Games Launcher",
+        "GOG Galaxy",
+        "Discord",
+        "OBS Studio",
+        "HWiNFO",
+        "GPU-Z",
+        "7-Zip"
+    )
+}
 #endregion
 
 #region --- menu ---
 # Interactive TUI menu for win_util
-# Two-panel layout: categories (left) | items (right)
-# Navigation: arrow keys, Space=toggle, Enter=apply, Q=quit
+#
+# Layout (mirrors linux_util):
+#
+#   ┌──────────────────────┬──────────────────────────────────────────────────┐
+#   │ Header                                                                  │
+#   ├──────────────────────┼──────────────────────────────────────────────────┤
+#   │ CATEGORIES           │ <current section header>                         │
+#   │   > Browsers         │   [ ]  Item Name              not installed      │
+#   │     Development      │   [+]  Item Name              v1.2.3             │
+#   │     ...              │                                                  │
+#   ├──────────────────────┤                                                  │
+#   │ PROFILES             │                                                  │
+#   │     Run Me First     │                                                  │
+#   │     Developer WS.    │                                                  │
+#   │     ...              │                                                  │
+#   ├──────────────────────┤                                                  │
+#   │ SYSTEM Details       │                                                  │
+#   │   Host: ...          │                                                  │
+#   │   OS:   ...          ├──────────────────────────────────────────────────┤
+#   │   CPU:  ...          │ <description pane>                               │
+#   ├──────────────────────┴──────────────────────────────────────────────────┤
+#   │ Footer / keybinds                                                       │
+#   └─────────────────────────────────────────────────────────────────────────┘
 
 #region --- ANSI Colors & Box Drawing ---
 
@@ -204,13 +513,13 @@ $ESC  = [char]27
 $R    = "${ESC}[0m"
 $BOLD = "${ESC}[1m"
 
-$FC   = "${ESC}[36m"      # cyan        - borders/structure
-$FY   = "${ESC}[33m"      # yellow      - cursor/counts
-$FG   = "${ESC}[32m"      # green       - selected
-$FM   = "${ESC}[35m"      # magenta     - version tags
-$FRed = "${ESC}[31m"      # red         - errors
-$FW   = "${ESC}[97m"      # bright white - titles
-$FDim = "${ESC}[2;37m"    # dim white   - inactive
+$FC   = "${ESC}[36m"       # cyan        - borders/structure
+$FY   = "${ESC}[33m"       # yellow      - cursor/counts
+$FG   = "${ESC}[32m"       # green       - selected / success
+$FM   = "${ESC}[35m"       # magenta     - version tags
+$FRed = "${ESC}[31m"       # red         - errors
+$FW   = "${ESC}[97m"       # bright white - titles
+$FDim = "${ESC}[2;37m"     # dim white   - inactive
 $BH   = "${ESC}[48;5;236m" # row highlight bg
 
 # Box-drawing chars as variables (safe: no raw non-ASCII bytes in strings)
@@ -226,32 +535,40 @@ $cTT = [char]0x2566  # top T
 $cBT = [char]0x2569  # bottom T
 $cXX = [char]0x256C  # cross/intersection
 
-function cH { param([int]$N) return ([string]$cHZ) * $N }  # repeat horizontal line
+function cH { param([int]$N) return ([string]$cHZ) * $N }
 
 #endregion
 
 #region --- Layout Constants ---
 
-$CAT_WIDTH   = 18   # left panel inner width (excluding borders)
-$MIN_COLS    = 72
-$MIN_ROWS    = 20
-$HEADER_ROWS = 6
-$FOOTER_ROWS = 4
+$CAT_WIDTH    = 22   # left sidebar inner width
+$MIN_COLS     = 78
+$MIN_ROWS     = 24
+$HEADER_ROWS  = 6
+$FOOTER_ROWS  = 4
+$DESC_ROWS    = 4    # description pane height (right side, bottom)
 
 #endregion
 
 #region --- State ---
 
 $script:MenuState = @{
-    Categories    = @()
-    ByCategory    = @{}
+    Categories    = @()         # category names
+    ByCategory    = @{}         # name -> list of utility hashtables
+    Profiles      = @()         # profile hashtables
+    SysInfo       = $null       # hashtable from Get-SystemInfo
+
+    # Sidebar focus model: which sidebar section is active, and the row index
+    # inside it. 'cats' / 'profiles' / 'items' for focus.
+    Section       = 'cats'      # which sidebar section the cursor sits in
     CatIndex      = 0
+    ProfileIndex  = 0
     ItemIndex     = 0
-    Focus         = 'items'
-    Selected      = @{}
+    Focus         = 'items'     # 'items' or 'sidebar'
+    Selected      = @{}         # utility Id -> bool
     ScrollOffset  = 0
     StatusMessage = ""
-    StatusColor   = $FW
+    StatusColor   = $null       # set after $FW is defined
 }
 
 #endregion
@@ -270,6 +587,25 @@ function Format-PadRight {
     return $Text.PadRight($Width)
 }
 
+function Get-TermSize {
+    return @{ W = [Console]::WindowWidth; H = [Console]::WindowHeight }
+}
+
+# Current items panel ("Browsers", "Development", or a profile preview).
+function Get-CurrentItems {
+    $s = $script:MenuState
+    if ($s.Categories.Count -eq 0) { return @() }
+    $cat = $s.Categories[$s.CatIndex]
+    if ($s.ByCategory[$cat]) { return @($s.ByCategory[$cat]) }
+    return @()
+}
+
+function Get-CurrentSectionTitle {
+    $s = $script:MenuState
+    if ($s.Categories.Count -eq 0) { return "" }
+    return $s.Categories[$s.CatIndex]
+}
+
 #endregion
 
 #region --- Initialization ---
@@ -279,7 +615,11 @@ function Initialize-MenuState {
     $s = $script:MenuState
     $s.ByCategory    = $ByCategory
     $s.Categories    = @($ByCategory.Keys)
+    $s.Profiles      = @(Get-AllProfiles)
+    $s.SysInfo       = Get-SystemInfo
+    $s.Section       = 'cats'
     $s.CatIndex      = 0
+    $s.ProfileIndex  = 0
     $s.ItemIndex     = 0
     $s.ScrollOffset  = 0
     $s.Focus         = 'items'
@@ -289,7 +629,7 @@ function Initialize-MenuState {
 
     foreach ($cat in $s.Categories) {
         foreach ($util in $ByCategory[$cat]) {
-            $fns = Get-UtilityFunctions $util
+            $fns  = Get-UtilityFunctions $util
             $inst = if ($fns.Test) { & $fns.Test } else { $false }
             $util['_Installed'] = $inst
             $util['_Version']   = if ($inst -and $fns.GetVersion) { & $fns.GetVersion } else { $null }
@@ -303,21 +643,14 @@ function Initialize-MenuState {
 
 #region --- Drawing ---
 
-function Get-TermSize {
-    return @{ W = [Console]::WindowWidth; H = [Console]::WindowHeight }
-}
-
 function Show-Header {
     param([int]$W)
-    $inner = $W - 2
-    # Layout: col 0 = ║, cols 1..CAT_WIDTH+1 = cat panel inner (CAT_WIDTH+1 chars),
-    # col CAT_WIDTH+2 = divider ║, cols (CAT_WIDTH+3)..(W-2) = items panel inner,
-    # col W-1 = right ║. So divider sits at column CAT_WIDTH+2.
-    $leftLen  = $CAT_WIDTH + 1                # ═ chars on left of ╦ in divider rows
-    $rightLen = $inner - $leftLen - 1         # ═ chars on right of ╦
+    $inner    = $W - 2
+    $leftLen  = $CAT_WIDTH + 1
+    $rightLen = $inner - $leftLen - 1
 
     $title   = Format-PadRight "  Windows Utilities Installer  |  win_util" $inner
-    $subline = Format-PadRight "  Powered by winget  |  Use arrow keys to navigate" $inner
+    $subline = Format-PadRight "  Powered by winget  |  Tab=switch focus  |  Q=quit" $inner
 
     $divLeft  = cH $leftLen
     $divRight = cH $rightLen
@@ -327,25 +660,26 @@ function Show-Header {
     Write-At 0 2 "${FC}${cVT}${R}${FDim}${subline}${R}${FC}${cVT}${R}"
     Write-At 0 3 "${FC}${cML}${divLeft}${cTT}${divRight}${cMR}${R}"
 
-    $catHdr  = Format-PadRight " CATEGORY" ($CAT_WIDTH + 1)
-    $itemHdr = Format-PadRight " UTILITY" $rightLen
+    $catHdr  = Format-PadRight " SIDEBAR" ($CAT_WIDTH + 1)
+    $itemHdr = Format-PadRight (" " + (Get-CurrentSectionTitle)) $rightLen
     Write-At 0 4 "${FC}${cVT}${R}${BOLD}${FY}${catHdr}${R}${FC}${cVT}${R}${BOLD}${FY}${itemHdr}${R}${FC}${cVT}${R}"
     Write-At 0 5 "${FC}${cML}${divLeft}${cXX}${divRight}${cMR}${R}"
 }
 
 function Show-Footer {
     param([int]$W, [int]$H)
-    $inner = $W - 2
-    $y     = $H - $FOOTER_ROWS
+    $inner    = $W - 2
+    $y        = $H - $FOOTER_ROWS
     $leftLen  = $CAT_WIDTH + 1
     $rightLen = $inner - $leftLen - 1
 
     $divLeft  = cH $leftLen
     $divRight = cH $rightLen
 
-    $sel   = @($script:MenuState.Selected.Values | Where-Object { $_ }).Count
+    $sel = @($script:MenuState.Selected.Values | Where-Object { $_ }).Count
+
     $hint1 = Format-PadRight "  [SPACE] Toggle  [A] All  [D] None  [U] Update-All  [R] Refresh  [Q] Quit" $inner
-    $hint2 = Format-PadRight "  [ENTER] Install/Uninstall selected  [$sel selected]" $inner
+    $hint2 = Format-PadRight "  [ENTER] Install/Uninstall (or apply profile)  [$sel selected]" $inner
 
     Write-At 0 $y       "${FC}${cML}${divLeft}${cBT}${divRight}${cMR}${R}"
     Write-At 0 ($y + 1) "${FC}${cVT}${R}${FDim}${hint1}${R}${FC}${cVT}${R}"
@@ -365,56 +699,131 @@ function Show-Separator {
     $rows   = $H - $HEADER_ROWS - $FOOTER_ROWS
     $startY = $HEADER_ROWS
     $x      = $CAT_WIDTH + 2
-
     for ($i = 0; $i -lt $rows; $i++) {
         Write-At $x ($startY + $i) "${FC}${cVT}${R}"
     }
 }
 
-function Show-Categories {
+# Build the sidebar as an ordered list of "lines", each tagged with type:
+#   header        -section heading (CATEGORIES / PROFILES / SYSTEM Details)
+#   sep           -horizontal separator line
+#   cat           -selectable category row (Index = $s.CatIndex)
+#   profile       -selectable profile row (Index = $s.ProfileIndex)
+#   info          -read-only system info row
+#   blank         -empty padding
+#
+# This lets us render and navigate the sidebar uniformly.
+function Get-SidebarLines {
+    $s     = $script:MenuState
+    $lines = [System.Collections.Generic.List[hashtable]]::new()
+
+    $lines.Add(@{ Type='header'; Text='CATEGORIES' })
+    $lines.Add(@{ Type='sep' })
+    for ($i = 0; $i -lt $s.Categories.Count; $i++) {
+        $lines.Add(@{ Type='cat'; Text=$s.Categories[$i]; Index=$i })
+    }
+
+    $lines.Add(@{ Type='blank' })
+    $lines.Add(@{ Type='header'; Text='PROFILES' })
+    $lines.Add(@{ Type='sep' })
+    for ($i = 0; $i -lt $s.Profiles.Count; $i++) {
+        $lines.Add(@{ Type='profile'; Text=$s.Profiles[$i].Name; Index=$i })
+    }
+
+    $lines.Add(@{ Type='blank' })
+    $lines.Add(@{ Type='header'; Text='SYSTEM Details' })
+    $lines.Add(@{ Type='sep' })
+    if ($s.SysInfo) {
+        $pairs = @(
+            @{ K='Host';   V=$s.SysInfo.Host   },
+            @{ K='OS';     V=$s.SysInfo.OS     },
+            @{ K='Kernel'; V=$s.SysInfo.Kernel },
+            @{ K='CPU';    V=$s.SysInfo.CPU    },
+            @{ K='Mem';    V=$s.SysInfo.Mem    },
+            @{ K='Disk';   V=$s.SysInfo.Disk   },
+            @{ K='Uptime'; V=$s.SysInfo.Uptime }
+        )
+        foreach ($p in $pairs) {
+            $lines.Add(@{ Type='info'; Text=("{0,7}: {1}" -f $p.K, $p.V) })
+        }
+    }
+
+    return $lines
+}
+
+function Show-Sidebar {
     param([int]$H)
-    $s    = $script:MenuState
-    $cats = $s.Categories
-    $rows = $H - $HEADER_ROWS - $FOOTER_ROWS
-    $y    = $HEADER_ROWS
+    $s     = $script:MenuState
+    $lines = @(Get-SidebarLines)
+    $rows  = $H - $HEADER_ROWS - $FOOTER_ROWS
+    $y     = $HEADER_ROWS
+    $width = $CAT_WIDTH + 1
 
     for ($i = 0; $i -lt $rows; $i++) {
         $ry = $y + $i
-        if ($i -lt $cats.Count) {
-            $cat   = $cats[$i]
-            $label = Format-PadRight " $cat" ($CAT_WIDTH + 1)
-            if ($i -eq $s.CatIndex -and $s.Focus -eq 'cats') {
-                Write-At 0 $ry "${FC}${cVT}${R}${BH}${FY}${BOLD}${label}${R}${FC}${cVT}${R}"
-            } elseif ($i -eq $s.CatIndex) {
-                Write-At 0 $ry "${FC}${cVT}${R}${FY}${label}${R}${FC}${cVT}${R}"
-            } else {
-                Write-At 0 $ry "${FC}${cVT}${R}${FW}${label}${R}${FC}${cVT}${R}"
+        if ($i -lt $lines.Count) {
+            $line = $lines[$i]
+            switch ($line.Type) {
+                'header'  {
+                    $label = Format-PadRight (" " + $line.Text) $width
+                    Write-At 0 $ry "${FC}${cVT}${R}${BOLD}${FY}${label}${R}${FC}${cVT}${R}"
+                }
+                'sep'     {
+                    Write-At 0 $ry "${FC}${cVT}${R}${FDim}$(cH $width)${R}${FC}${cVT}${R}"
+                }
+                'blank'   {
+                    Write-At 0 $ry "${FC}${cVT}${R}$(Format-PadRight '' $width)${FC}${cVT}${R}"
+                }
+                'info'    {
+                    $label = Format-PadRight (" " + $line.Text) $width
+                    Write-At 0 $ry "${FC}${cVT}${R}${FDim}${label}${R}${FC}${cVT}${R}"
+                }
+                'cat'     {
+                    $isSel = ($s.Section -eq 'cats' -and $line.Index -eq $s.CatIndex)
+                    $label = Format-PadRight ("   " + $line.Text) $width
+                    if ($isSel -and $s.Focus -eq 'sidebar') {
+                        Write-At 0 $ry "${FC}${cVT}${R}${BH}${FY}${BOLD}${label}${R}${FC}${cVT}${R}"
+                    } elseif ($isSel) {
+                        Write-At 0 $ry "${FC}${cVT}${R}${FY}${label}${R}${FC}${cVT}${R}"
+                    } else {
+                        Write-At 0 $ry "${FC}${cVT}${R}${FW}${label}${R}${FC}${cVT}${R}"
+                    }
+                }
+                'profile' {
+                    $isSel = ($s.Section -eq 'profiles' -and $line.Index -eq $s.ProfileIndex)
+                    $label = Format-PadRight ("   " + $line.Text) $width
+                    if ($isSel -and $s.Focus -eq 'sidebar') {
+                        Write-At 0 $ry "${FC}${cVT}${R}${BH}${FG}${BOLD}${label}${R}${FC}${cVT}${R}"
+                    } elseif ($isSel) {
+                        Write-At 0 $ry "${FC}${cVT}${R}${FG}${label}${R}${FC}${cVT}${R}"
+                    } else {
+                        Write-At 0 $ry "${FC}${cVT}${R}${FW}${label}${R}${FC}${cVT}${R}"
+                    }
+                }
             }
         } else {
-            Write-At 0 $ry "${FC}${cVT}${R}$(Format-PadRight '' ($CAT_WIDTH + 1))${FC}${cVT}${R}"
+            Write-At 0 $ry "${FC}${cVT}${R}$(Format-PadRight '' $width)${FC}${cVT}${R}"
         }
     }
 }
 
 function Show-Items {
     param([int]$W, [int]$H)
-    $s      = $script:MenuState
-    # Layout: col 0 ║, cols 1..(CAT_WIDTH+1) cat panel, col (CAT_WIDTH+2) ║,
-    # cols (CAT_WIDTH+3)..(W-2) items panel inner, col (W-1) ║.
-    $startX = $CAT_WIDTH + 3
-    $rightX = $W - 1
-    $itemW  = $rightX - $startX           # inner width of items panel
-    $rows   = $H - $HEADER_ROWS - $FOOTER_ROWS
-    $startY = $HEADER_ROWS
+    $s        = $script:MenuState
+    $startX   = $CAT_WIDTH + 3
+    $rightX   = $W - 1
+    $itemW    = $rightX - $startX
+    $totalRows = $H - $HEADER_ROWS - $FOOTER_ROWS
+    $descTop   = $HEADER_ROWS + $totalRows - $DESC_ROWS
+    $listRows  = $totalRows - $DESC_ROWS - 1   # minus 1 for the divider row
+    $startY    = $HEADER_ROWS
 
-    $cat   = if ($s.CatIndex -lt $s.Categories.Count) { $s.Categories[$s.CatIndex] } else { $null }
-    $items = @()
-    if ($cat -and $s.ByCategory[$cat]) { $items = @($s.ByCategory[$cat]) }
+    $items = Get-CurrentItems
 
-    if ($s.ItemIndex - $s.ScrollOffset -ge $rows) { $s.ScrollOffset = $s.ItemIndex - $rows + 1 }
-    if ($s.ItemIndex -lt $s.ScrollOffset)          { $s.ScrollOffset = $s.ItemIndex }
+    if ($s.ItemIndex - $s.ScrollOffset -ge $listRows) { $s.ScrollOffset = $s.ItemIndex - $listRows + 1 }
+    if ($s.ItemIndex -lt $s.ScrollOffset)             { $s.ScrollOffset = $s.ItemIndex }
 
-    for ($i = 0; $i -lt $rows; $i++) {
+    for ($i = 0; $i -lt $listRows; $i++) {
         $ry  = $startY + $i
         $idx = $i + $s.ScrollOffset
 
@@ -433,8 +842,6 @@ function Show-Items {
             $tagText  = if ($installed) { if ($version) { "v$version" } else { "installed" } } else { "not installed" }
             $tagColor = if ($installed) { $FM } else { $FDim }
 
-            # Row content layout (itemW total chars): " [X] name <gap> tag "
-            # Fixed overhead besides name+tag = 1 lead + 3 box + 1 + 1 + 1 trailing = 7
             $nameMax = $itemW - 7 - $tagText.Length
             if ($nameMax -lt 1) { $nameMax = 1 }
             if ($name.Length -gt $nameMax) { $name = $name.Substring(0, $nameMax - 1) + "~" }
@@ -451,6 +858,67 @@ function Show-Items {
 
         Write-At $rightX $ry "${FC}${cVT}${R}"
     }
+
+    # Divider between item list and description pane.
+    $divY = $startY + $listRows
+    Write-At $startX $divY "${FC}${FDim}$(cH $itemW)${R}"
+    Write-At $rightX $divY "${FC}${cVT}${R}"
+
+    # Description pane: show description of the currently focused item or profile.
+    $descLines = @(Get-DescriptionLines $itemW $DESC_ROWS)
+    for ($i = 0; $i -lt $DESC_ROWS; $i++) {
+        $ry = $descTop + $i
+        $text = if ($i -lt $descLines.Count) { $descLines[$i] } else { "" }
+        Write-At $startX $ry (Format-PadRight ("  " + $text) $itemW)
+        Write-At $rightX $ry "${FC}${cVT}${R}"
+    }
+}
+
+# Returns word-wrapped description lines for the focused element.
+function Get-DescriptionLines {
+    param([int]$Width, [int]$MaxRows)
+    $s = $script:MenuState
+    $text = ""
+
+    if ($s.Section -eq 'profiles' -and $s.Focus -eq 'sidebar') {
+        if ($s.ProfileIndex -lt $s.Profiles.Count) {
+            $p = $s.Profiles[$s.ProfileIndex]
+            $text = "$($p.Description) -$($p.Items.Count) items"
+        }
+    } else {
+        $items = Get-CurrentItems
+        if ($items.Count -gt 0 -and $s.ItemIndex -lt $items.Count) {
+            $util = $items[$s.ItemIndex]
+            if ($util.ContainsKey('Description') -and $util.Description) {
+                $text = $util.Description
+            } else {
+                $text = $util.Id
+            }
+        }
+    }
+
+    return (Format-WrappedText $text ($Width - 2) $MaxRows)
+}
+
+function Format-WrappedText {
+    param([string]$Text, [int]$Width, [int]$MaxLines)
+    if (-not $Text -or $Width -lt 1) { return @() }
+    $words = $Text -split '\s+'
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $cur = ""
+    foreach ($w in $words) {
+        if ($cur.Length -eq 0) {
+            $cur = $w
+        } elseif (($cur.Length + 1 + $w.Length) -le $Width) {
+            $cur = "$cur $w"
+        } else {
+            $lines.Add($cur)
+            if ($lines.Count -ge $MaxLines) { return $lines }
+            $cur = $w
+        }
+    }
+    if ($cur.Length -gt 0 -and $lines.Count -lt $MaxLines) { $lines.Add($cur) }
+    return $lines
 }
 
 function Show-Frame {
@@ -465,9 +933,9 @@ function Show-Frame {
 
     Show-Header    $W
     Show-Separator $H
-    Show-Categories $H
-    Show-Items      $W $H
-    Show-Footer     $W $H
+    Show-Sidebar   $H
+    Show-Items     $W $H
+    Show-Footer    $W $H
     [Console]::SetCursorPosition(0, $H - 1)
 }
 
@@ -550,6 +1018,34 @@ function Invoke-Operation {
     $s.StatusColor   = if ($fail -gt 0) { $FRed } else { $FG }
 }
 
+function Invoke-ProfileApply {
+    param([hashtable]$ProfileDef)
+    $s        = $script:MenuState
+    $resolved = Resolve-ProfileItems $ProfileDef
+    $missing  = @()
+
+    # Clear current selections, then mark profile items.
+    foreach ($id in @($s.Selected.Keys)) { $s.Selected[$id] = $false }
+    foreach ($util in $resolved) { $s.Selected[$util.Id] = $true }
+
+    foreach ($name in $ProfileDef.Items) {
+        $found = $false
+        foreach ($r in $resolved) {
+            if ($r.Name -ieq $name) { $found = $true; break }
+        }
+        if (-not $found) { $missing += $name }
+    }
+
+    $count = $resolved.Count
+    if ($missing.Count -gt 0) {
+        $s.StatusMessage = "Profile '$($ProfileDef.Name)' applied: $count selected, $($missing.Count) missing."
+        $s.StatusColor   = $FY
+    } else {
+        $s.StatusMessage = "Profile '$($ProfileDef.Name)' applied: $count items selected."
+        $s.StatusColor   = $FG
+    }
+}
+
 function Update-MenuStatus {
     $s = $script:MenuState
     $s.StatusMessage = "Refreshing..."
@@ -563,8 +1059,55 @@ function Update-MenuStatus {
             if ($util['_Installed'] -and $fns.GetVersion) { $util['_Version'] = & $fns.GetVersion }
         }
     }
+    $s.SysInfo = Get-SystemInfo
     $s.StatusMessage = "Status refreshed."
     $s.StatusColor   = $FG
+}
+
+#endregion
+
+#region --- Navigation Helpers ---
+
+# Cycle the sidebar focus through cats -> profiles -> (and back).
+function Move-Sidebar {
+    param([int]$Direction)   # +1 down, -1 up
+    $s = $script:MenuState
+    if ($s.Section -eq 'cats') {
+        $next = $s.CatIndex + $Direction
+        if ($next -lt 0) {
+            # Wrap up: move into profiles at the last index.
+            if ($s.Profiles.Count -gt 0) {
+                $s.Section = 'profiles'
+                $s.ProfileIndex = $s.Profiles.Count - 1
+            }
+        } elseif ($next -ge $s.Categories.Count) {
+            # Wrap down: move into profiles at index 0.
+            if ($s.Profiles.Count -gt 0) {
+                $s.Section = 'profiles'
+                $s.ProfileIndex = 0
+            }
+        } else {
+            $s.CatIndex = $next
+            $s.ItemIndex = 0; $s.ScrollOffset = 0
+        }
+    } elseif ($s.Section -eq 'profiles') {
+        $next = $s.ProfileIndex + $Direction
+        if ($next -lt 0) {
+            if ($s.Categories.Count -gt 0) {
+                $s.Section = 'cats'
+                $s.CatIndex = $s.Categories.Count - 1
+                $s.ItemIndex = 0; $s.ScrollOffset = 0
+            }
+        } elseif ($next -ge $s.Profiles.Count) {
+            if ($s.Categories.Count -gt 0) {
+                $s.Section = 'cats'
+                $s.CatIndex = 0
+                $s.ItemIndex = 0; $s.ScrollOffset = 0
+            }
+        } else {
+            $s.ProfileIndex = $next
+        }
+    }
 }
 
 #endregion
@@ -605,64 +1148,64 @@ function Start-Menu {
 
         switch ($key.Key) {
             'UpArrow' {
-                if ($s.Focus -eq 'cats') {
-                    if ($s.CatIndex -gt 0) { $s.CatIndex--; $s.ItemIndex = 0; $s.ScrollOffset = 0 }
+                if ($s.Focus -eq 'sidebar') {
+                    Move-Sidebar -1
                 } else {
                     if ($s.ItemIndex -gt 0) { $s.ItemIndex-- }
                 }
             }
             'DownArrow' {
-                if ($s.Focus -eq 'cats') {
-                    if ($s.CatIndex -lt ($s.Categories.Count - 1)) {
-                        $s.CatIndex++; $s.ItemIndex = 0; $s.ScrollOffset = 0
-                    }
+                if ($s.Focus -eq 'sidebar') {
+                    Move-Sidebar 1
                 } else {
-                    $cat   = $s.Categories[$s.CatIndex]
-                    $count = if ($s.ByCategory[$cat]) { $s.ByCategory[$cat].Count } else { 0 }
-                    if ($s.ItemIndex -lt ($count - 1)) { $s.ItemIndex++ }
+                    $items = Get-CurrentItems
+                    if ($s.ItemIndex -lt ($items.Count - 1)) { $s.ItemIndex++ }
                 }
             }
-            'LeftArrow'  { $s.Focus = 'cats' }
+            'LeftArrow'  { $s.Focus = 'sidebar' }
             'RightArrow' { $s.Focus = 'items' }
-            'Tab'        { $s.Focus = if ($s.Focus -eq 'cats') { 'items' } else { 'cats' } }
+            'Tab'        { $s.Focus = if ($s.Focus -eq 'sidebar') { 'items' } else { 'sidebar' } }
 
             'Spacebar' {
-                $cat   = $s.Categories[$s.CatIndex]
-                $items = @()
-                if ($s.ByCategory[$cat]) { $items = @($s.ByCategory[$cat]) }
-                if ($items.Count -gt 0 -and $s.ItemIndex -lt $items.Count) {
-                    $id = $items[$s.ItemIndex].Id
-                    $s.Selected[$id] = -not $s.Selected[$id]
+                if ($s.Focus -eq 'items') {
+                    $items = Get-CurrentItems
+                    if ($items.Count -gt 0 -and $s.ItemIndex -lt $items.Count) {
+                        $id = $items[$s.ItemIndex].Id
+                        $s.Selected[$id] = -not $s.Selected[$id]
+                    }
                 }
             }
             'A' {
-                $cat = $s.Categories[$s.CatIndex]
-                if ($s.ByCategory[$cat]) {
-                    foreach ($u in $s.ByCategory[$cat]) { $s.Selected[$u.Id] = $true }
-                }
+                $items = Get-CurrentItems
+                foreach ($u in $items) { $s.Selected[$u.Id] = $true }
             }
             'D' {
-                $cat = $s.Categories[$s.CatIndex]
-                if ($s.ByCategory[$cat]) {
-                    foreach ($u in $s.ByCategory[$cat]) { $s.Selected[$u.Id] = $false }
-                }
+                $items = Get-CurrentItems
+                foreach ($u in $items) { $s.Selected[$u.Id] = $false }
             }
             'R' { Update-MenuStatus }
             'U' { Invoke-Operation 'update-all' }
 
             'Enter' {
-                $anySelected = $s.Selected.Values | Where-Object { $_ }
-                if ($anySelected) {
-                    $allInstalled = $true
-                    foreach ($cat in $s.Categories) {
-                        foreach ($u in $s.ByCategory[$cat]) {
-                            if ($s.Selected[$u.Id] -and -not $u['_Installed']) { $allInstalled = $false }
-                        }
+                if ($s.Focus -eq 'sidebar' -and $s.Section -eq 'profiles') {
+                    if ($s.ProfileIndex -lt $s.Profiles.Count) {
+                        Invoke-ProfileApply $s.Profiles[$s.ProfileIndex]
+                        $s.Focus = 'items'
                     }
-                    Invoke-Operation (if ($allInstalled) { 'uninstall' } else { 'install' })
                 } else {
-                    $s.StatusMessage = "Select items with [SPACE] first."
-                    $s.StatusColor   = $FY
+                    $anySelected = $s.Selected.Values | Where-Object { $_ }
+                    if ($anySelected) {
+                        $allInstalled = $true
+                        foreach ($cat in $s.Categories) {
+                            foreach ($u in $s.ByCategory[$cat]) {
+                                if ($s.Selected[$u.Id] -and -not $u['_Installed']) { $allInstalled = $false }
+                            }
+                        }
+                        Invoke-Operation (if ($allInstalled) { 'uninstall' } else { 'install' })
+                    } else {
+                        $s.StatusMessage = "Select items with [SPACE] first, or pick a Profile."
+                        $s.StatusColor   = $FY
+                    }
                 }
             }
 
@@ -676,7 +1219,6 @@ function Start-Menu {
 }
 
 #endregion
-
 #endregion
 
 #region --- main ---
@@ -812,6 +1354,9 @@ function Show-Help {
     Write-Host "    .\win_util.ps1 --update-all               Update all installed utilities"
     Write-Host "    .\win_util.ps1 --list                     List all available utilities"
     Write-Host "    .\win_util.ps1 --check     [name/id]      Check installation status"
+    Write-Host "    .\win_util.ps1 --apply-profile [name]     Install every utility in a profile"
+    Write-Host "    .\win_util.ps1 --list-profiles            List curated profiles"
+    Write-Host "    .\win_util.ps1 --sys-info                 Print system details"
     Write-Host "    .\win_util.ps1 --help                     Show this help"
     Write-Host ""
     Write-Host "  MENU KEYS:"
@@ -892,6 +1437,49 @@ function Invoke-CLICheck {
     if ($version) { Write-Host "  Version: $version" -ForegroundColor Magenta }
 }
 
+function Show-Profiles {
+    Write-Host ""
+    foreach ($p in Get-AllProfiles) {
+        Write-Host ("  [{0}]" -f $p.Name) -ForegroundColor Yellow
+        Write-Host ("    {0}" -f $p.Description) -ForegroundColor DarkGray
+        foreach ($name in $p.Items) {
+            Write-Host ("      - {0}" -f $name) -ForegroundColor White
+        }
+        Write-Host ""
+    }
+}
+
+function Invoke-CLIApplyProfile {
+    param([string]$Name)
+    $p = Find-Profile $Name
+    if (-not $p) { Write-Host "  Unknown profile: '$Name'" -ForegroundColor Red; exit 1 }
+    Write-Host "  Applying profile '$($p.Name)'..." -ForegroundColor Cyan
+    $resolved = Resolve-ProfileItems $p
+    $ok = 0; $fail = 0
+    foreach ($u in $resolved) {
+        $fns       = Get-UtilityFunctions $u
+        $installed = if ($fns.Test) { & $fns.Test } else { Test-WingetInstalled $u.Id }
+        if ($installed) {
+            Write-Host "  $($u.Name) already installed - skipping." -ForegroundColor DarkGray
+            continue
+        }
+        Write-Host "  ===> Installing $($u.Name)" -ForegroundColor Cyan
+        if ($fns.Install) { & $fns.Install } else { Invoke-WingetInstall $u.Id }
+        if ($LASTEXITCODE -eq 0) { $ok++ } else { $fail++ }
+    }
+    Write-Host ""
+    Write-Host "  Profile complete.  Succeeded: $ok  Failed: $fail" -ForegroundColor White
+}
+
+function Show-SysInfo {
+    $info = Get-SystemInfo
+    Write-Host ""
+    foreach ($k in $info.Keys) {
+        Write-Host ("  {0,7}: {1}" -f $k, $info[$k]) -ForegroundColor White
+    }
+    Write-Host ""
+}
+
 #endregion
 
 #region --- Entry Point ---
@@ -899,13 +1487,16 @@ function Invoke-CLICheck {
 Initialize-Logging
 Assert-Winget
 
-if ($Help)      { Show-Banner; Show-Help;                       exit 0 }
-if ($List)      { Show-Banner; Show-List;                       exit 0 }
-if ($Install)   { Show-Banner; Invoke-CLIInstall   $Install;    exit 0 }
-if ($Uninstall) { Show-Banner; Invoke-CLIUninstall $Uninstall;  exit 0 }
-if ($Update)    { Show-Banner; Invoke-CLIUpdate     $Update;    exit 0 }
-if ($UpdateAll) { Show-Banner; Invoke-CLIUpdateAll;             exit 0 }
-if ($Check)     { Show-Banner; Invoke-CLICheck      $Check;     exit 0 }
+if ($Help)         { Show-Banner; Show-Help;                          exit 0 }
+if ($List)         { Show-Banner; Show-List;                          exit 0 }
+if ($ListProfiles) { Show-Banner; Show-Profiles;                      exit 0 }
+if ($SysInfo)      { Show-Banner; Show-SysInfo;                       exit 0 }
+if ($Install)      { Show-Banner; Invoke-CLIInstall      $Install;    exit 0 }
+if ($Uninstall)    { Show-Banner; Invoke-CLIUninstall    $Uninstall;  exit 0 }
+if ($Update)       { Show-Banner; Invoke-CLIUpdate       $Update;     exit 0 }
+if ($UpdateAll)    { Show-Banner; Invoke-CLIUpdateAll;                exit 0 }
+if ($Check)        { Show-Banner; Invoke-CLICheck        $Check;      exit 0 }
+if ($ApplyProfile) { Show-Banner; Invoke-CLIApplyProfile $ApplyProfile; exit 0 }
 
 # Default: interactive menu
 Show-Banner

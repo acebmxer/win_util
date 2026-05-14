@@ -21,6 +21,9 @@ param(
     [switch] $UpdateAll,
     [switch] $List,
     [string] $Check       = "",
+    [string] $ApplyProfile = "",
+    [switch] $ListProfiles,
+    [switch] $SysInfo,
     [switch] $Help
 )
 
@@ -49,8 +52,10 @@ function Show-Banner {
 # Wrapping these in a function would scope the definitions to that function and they would
 # disappear on return, causing "Initialize-Logging not recognized" at the entry point.
 . (Join-Path $ROOT "lib\logging.ps1")
+. (Join-Path $ROOT "lib\sysinfo.ps1")
 . (Join-Path $ROOT "lib\utilities.ps1")
 . (Join-Path $ROOT "lib\installers.ps1")
+. (Join-Path $ROOT "lib\profiles.ps1")
 . (Join-Path $ROOT "lib\menu.ps1")
 # COMPILE:SKIP:END
 
@@ -172,6 +177,9 @@ function Show-Help {
     Write-Host "    .\win_util.ps1 --update-all               Update all installed utilities"
     Write-Host "    .\win_util.ps1 --list                     List all available utilities"
     Write-Host "    .\win_util.ps1 --check     [name/id]      Check installation status"
+    Write-Host "    .\win_util.ps1 --apply-profile [name]     Install every utility in a profile"
+    Write-Host "    .\win_util.ps1 --list-profiles            List curated profiles"
+    Write-Host "    .\win_util.ps1 --sys-info                 Print system details"
     Write-Host "    .\win_util.ps1 --help                     Show this help"
     Write-Host ""
     Write-Host "  MENU KEYS:"
@@ -252,6 +260,49 @@ function Invoke-CLICheck {
     if ($version) { Write-Host "  Version: $version" -ForegroundColor Magenta }
 }
 
+function Show-Profiles {
+    Write-Host ""
+    foreach ($p in Get-AllProfiles) {
+        Write-Host ("  [{0}]" -f $p.Name) -ForegroundColor Yellow
+        Write-Host ("    {0}" -f $p.Description) -ForegroundColor DarkGray
+        foreach ($name in $p.Items) {
+            Write-Host ("      - {0}" -f $name) -ForegroundColor White
+        }
+        Write-Host ""
+    }
+}
+
+function Invoke-CLIApplyProfile {
+    param([string]$Name)
+    $p = Find-Profile $Name
+    if (-not $p) { Write-Host "  Unknown profile: '$Name'" -ForegroundColor Red; exit 1 }
+    Write-Host "  Applying profile '$($p.Name)'..." -ForegroundColor Cyan
+    $resolved = Resolve-ProfileItems $p
+    $ok = 0; $fail = 0
+    foreach ($u in $resolved) {
+        $fns       = Get-UtilityFunctions $u
+        $installed = if ($fns.Test) { & $fns.Test } else { Test-WingetInstalled $u.Id }
+        if ($installed) {
+            Write-Host "  $($u.Name) already installed - skipping." -ForegroundColor DarkGray
+            continue
+        }
+        Write-Host "  ===> Installing $($u.Name)" -ForegroundColor Cyan
+        if ($fns.Install) { & $fns.Install } else { Invoke-WingetInstall $u.Id }
+        if ($LASTEXITCODE -eq 0) { $ok++ } else { $fail++ }
+    }
+    Write-Host ""
+    Write-Host "  Profile complete.  Succeeded: $ok  Failed: $fail" -ForegroundColor White
+}
+
+function Show-SysInfo {
+    $info = Get-SystemInfo
+    Write-Host ""
+    foreach ($k in $info.Keys) {
+        Write-Host ("  {0,7}: {1}" -f $k, $info[$k]) -ForegroundColor White
+    }
+    Write-Host ""
+}
+
 #endregion
 
 #region --- Entry Point ---
@@ -259,13 +310,16 @@ function Invoke-CLICheck {
 Initialize-Logging
 Assert-Winget
 
-if ($Help)      { Show-Banner; Show-Help;                       exit 0 }
-if ($List)      { Show-Banner; Show-List;                       exit 0 }
-if ($Install)   { Show-Banner; Invoke-CLIInstall   $Install;    exit 0 }
-if ($Uninstall) { Show-Banner; Invoke-CLIUninstall $Uninstall;  exit 0 }
-if ($Update)    { Show-Banner; Invoke-CLIUpdate     $Update;    exit 0 }
-if ($UpdateAll) { Show-Banner; Invoke-CLIUpdateAll;             exit 0 }
-if ($Check)     { Show-Banner; Invoke-CLICheck      $Check;     exit 0 }
+if ($Help)         { Show-Banner; Show-Help;                          exit 0 }
+if ($List)         { Show-Banner; Show-List;                          exit 0 }
+if ($ListProfiles) { Show-Banner; Show-Profiles;                      exit 0 }
+if ($SysInfo)      { Show-Banner; Show-SysInfo;                       exit 0 }
+if ($Install)      { Show-Banner; Invoke-CLIInstall      $Install;    exit 0 }
+if ($Uninstall)    { Show-Banner; Invoke-CLIUninstall    $Uninstall;  exit 0 }
+if ($Update)       { Show-Banner; Invoke-CLIUpdate       $Update;     exit 0 }
+if ($UpdateAll)    { Show-Banner; Invoke-CLIUpdateAll;                exit 0 }
+if ($Check)        { Show-Banner; Invoke-CLICheck        $Check;      exit 0 }
+if ($ApplyProfile) { Show-Banner; Invoke-CLIApplyProfile $ApplyProfile; exit 0 }
 
 # Default: interactive menu
 Show-Banner

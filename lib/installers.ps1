@@ -1,4 +1,4 @@
-# Utility registry — defines Register-Utility and standard winget wrappers
+# Utility registry -defines Register-Utility and standard winget wrappers
 
 $script:Registry = [System.Collections.Generic.List[hashtable]]::new()
 
