@@ -94,6 +94,28 @@ Register-Utility @{ Name = "WinCleanup";               Id = "PozzaTech.WinCleanu
 Register-Utility @{ Name = "Rufus";                    Id = "Rufus.Rufus";                            Category = "Bootable Media"; Description = "Create bootable USB drives from ISOs" }
 Register-Utility @{ Name = "Ventoy";                   Id = "Ventoy.Ventoy";                          Category = "Bootable Media"; Description = "Bootable USB tool -boot multiple ISOs from one drive" }
 
+# ── Snapshots & Backup ────────────────────────────────────────────────────
+# Built-in action entries (no install) wrapping native Windows snapshot/backup
+# tools. Each description names the underlying utility so it's visible in the
+# menu's description pane. Veeam is the third-party image-backup pick.
+#
+# System Restore (Checkpoint-Computer / VSS):
+Register-Utility @{ Name = "Create Restore Point";       Id = "WinUtil.CreateRestorePoint";       Category = "Snapshots & Backup"; Action = $true; Description = "System Restore: create a checkpoint via Checkpoint-Computer (built-in)" }
+Register-Utility @{ Name = "List Restore Points";        Id = "WinUtil.ListRestorePoints";        Category = "Snapshots & Backup"; Action = $true; Description = "System Restore: list checkpoints via Get-ComputerRestorePoint (built-in)" }
+Register-Utility @{ Name = "Open System Protection";     Id = "WinUtil.OpenSystemProtection";     Category = "Snapshots & Backup"; Action = $true; Description = "Launches SystemPropertiesProtection.exe to enable/configure System Restore" }
+# Volume Shadow Copy Service (vssadmin / WMI):
+Register-Utility @{ Name = "Create Shadow Copy (VSS)";   Id = "WinUtil.CreateShadowCopy";         Category = "Snapshots & Backup"; Action = $true; Description = "VSS: create a shadow copy via Win32_ShadowCopy::Create (WMI; client-SKU compatible)" }
+Register-Utility @{ Name = "List Shadow Copies (VSS)";   Id = "WinUtil.ListShadowCopies";         Category = "Snapshots & Backup"; Action = $true; Description = "VSS: 'vssadmin list shadows' (built-in)" }
+Register-Utility @{ Name = "Delete Oldest Shadow (VSS)"; Id = "WinUtil.DeleteOldestShadowCopy";   Category = "Snapshots & Backup"; Action = $true; Description = "VSS: 'vssadmin delete shadows /oldest /quiet' for chosen volume (built-in)" }
+# File History (FhManagew / control panel):
+Register-Utility @{ Name = "Open File History";          Id = "WinUtil.OpenFileHistory";          Category = "Snapshots & Backup"; Action = $true; Description = "File History: opens 'control /name Microsoft.FileHistory' (built-in)" }
+Register-Utility @{ Name = "Run File History Backup";    Id = "WinUtil.RunFileHistoryBackup";     Category = "Snapshots & Backup"; Action = $true; Description = "File History: trigger an immediate backup via FhManagew.exe -fullbackup (built-in)" }
+# wbadmin (Windows Server Backup / Windows Backup feature):
+Register-Utility @{ Name = "System Image Backup";        Id = "WinUtil.WbadminSystemImage";       Category = "Snapshots & Backup"; Action = $true; Description = "wbadmin start backup -allCritical -quiet (built-in; prompts for target volume)" }
+Register-Utility @{ Name = "List wbadmin Backups";       Id = "WinUtil.WbadminListBackups";       Category = "Snapshots & Backup"; Action = $true; Description = "wbadmin get versions (built-in; lists available backup catalog entries)" }
+# Third-party:
+Register-Utility @{ Name = "Veeam Agent for Windows";    Id = "Veeam.VeeamAgent";                 Category = "Snapshots & Backup"; Description = "Veeam Agent for Microsoft Windows (Free): image-level backup & bare-metal restore" }
+
 # ── Runtimes ──────────────────────────────────────────────────────────────
 Register-Utility @{ Name = "Java Runtime Environment"; Id = "Oracle.JavaRuntimeEnvironment";          Category = "Runtimes";    Description = "Oracle Java Runtime Environment" }
 Register-Utility @{ Name = "OpenJDK 21";               Id = "Microsoft.OpenJDK.21";                   Category = "Runtimes";    Description = "Microsoft Build of OpenJDK 21 (LTS)" }
