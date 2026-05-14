@@ -61,7 +61,7 @@ Register-Utility @{ Name = "LibreOffice";              Id = "TheDocumentFoundati
 Register-Utility @{ Name = "OnlyOffice";               Id = "ONLYOFFICE.DesktopEditors";              Category = "Productivity"; Description = "Office suite with MS Office format compatibility" }
 Register-Utility @{ Name = "Notepad++";                Id = "Notepad++.Notepad++";                    Category = "Productivity"; Description = "Source-code editor with syntax highlighting" }
 Register-Utility @{ Name = "Obsidian";                 Id = "Obsidian.Obsidian";                      Category = "Productivity"; Description = "Markdown-based knowledge base with graphs and plugins" }
-Register-Utility @{ Name = "Joplin";                   Id = "JoplinApp.Joplin";                       Category = "Productivity"; Description = "Note-taking app with Markdown and sync" }
+Register-Utility @{ Name = "Joplin";                   Id = "Joplin.Joplin";                          Category = "Productivity"; Description = "Note-taking app with Markdown and sync" }
 Register-Utility @{ Name = "Logseq";                   Id = "Logseq.Logseq";                          Category = "Productivity"; Description = "Privacy-first knowledge management and outliner" }
 Register-Utility @{ Name = "Bitwarden";                Id = "Bitwarden.Bitwarden";                    Category = "Productivity"; Description = "Open-source password manager" }
 Register-Utility @{ Name = "Nextcloud Desktop";        Id = "Nextcloud.NextcloudDesktop";             Category = "Productivity"; Description = "Sync client for self-hosted Nextcloud storage" }
