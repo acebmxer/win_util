@@ -28,6 +28,7 @@ $cML = [char]0x2560  # mid-left T
 $cMR = [char]0x2563  # mid-right T
 $cTT = [char]0x2566  # top T
 $cBT = [char]0x2569  # bottom T
+$cXX = [char]0x256C  # cross/intersection
 
 function cH { param([int]$N) return ([string]$cHZ) * $N }  # repeat horizontal line
 
@@ -38,7 +39,7 @@ function cH { param([int]$N) return ([string]$cHZ) * $N }  # repeat horizontal l
 $CAT_WIDTH   = 18   # left panel inner width (excluding borders)
 $MIN_COLS    = 72
 $MIN_ROWS    = 20
-$HEADER_ROWS = 5
+$HEADER_ROWS = 6
 $FOOTER_ROWS = 4
 
 #endregion
@@ -133,6 +134,7 @@ function Show-Header {
     $catHdr  = Format-PadRight " CATEGORY" ($CAT_WIDTH + 1)
     $itemHdr = Format-PadRight " UTILITY" $rightLen
     Write-At 0 4 "${FC}${cVT}${R}${BOLD}${FY}${catHdr}${R}${FC}${cVT}${R}${BOLD}${FY}${itemHdr}${R}${FC}${cVT}${R}"
+    Write-At 0 5 "${FC}${cML}${divLeft}${cXX}${divRight}${cMR}${R}"
 }
 
 function Show-Footer {
@@ -164,8 +166,8 @@ function Show-Footer {
 
 function Show-Separator {
     param([int]$H)
-    $rows   = $H - $HEADER_ROWS - $FOOTER_ROWS - 1
-    $startY = $HEADER_ROWS + 1
+    $rows   = $H - $HEADER_ROWS - $FOOTER_ROWS
+    $startY = $HEADER_ROWS
     $x      = $CAT_WIDTH + 2
 
     for ($i = 0; $i -lt $rows; $i++) {
@@ -177,8 +179,8 @@ function Show-Categories {
     param([int]$H)
     $s    = $script:MenuState
     $cats = $s.Categories
-    $rows = $H - $HEADER_ROWS - $FOOTER_ROWS - 1
-    $y    = $HEADER_ROWS + 1
+    $rows = $H - $HEADER_ROWS - $FOOTER_ROWS
+    $y    = $HEADER_ROWS
 
     for ($i = 0; $i -lt $rows; $i++) {
         $ry = $y + $i
@@ -206,8 +208,8 @@ function Show-Items {
     $startX = $CAT_WIDTH + 3
     $rightX = $W - 1
     $itemW  = $rightX - $startX           # inner width of items panel
-    $rows   = $H - $HEADER_ROWS - $FOOTER_ROWS - 1
-    $startY = $HEADER_ROWS + 1
+    $rows   = $H - $HEADER_ROWS - $FOOTER_ROWS
+    $startY = $HEADER_ROWS
 
     $cat   = if ($s.CatIndex -lt $s.Categories.Count) { $s.Categories[$s.CatIndex] } else { $null }
     $items = @()
