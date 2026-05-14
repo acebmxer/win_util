@@ -385,9 +385,25 @@ function Start-Menu {
     [Console]::Clear()
 
     $s = $script:MenuState
+    $lastW = 0; $lastH = 0
 
     while ($true) {
+        $t = Get-TermSize
+        if ($t.W -ne $lastW -or $t.H -ne $lastH) {
+            [Console]::Clear()
+            $lastW = $t.W; $lastH = $t.H
+        }
         Show-Frame
+
+        while (-not [Console]::KeyAvailable) {
+            Start-Sleep -Milliseconds 80
+            $t = Get-TermSize
+            if ($t.W -ne $lastW -or $t.H -ne $lastH) {
+                [Console]::Clear()
+                $lastW = $t.W; $lastH = $t.H
+                Show-Frame
+            }
+        }
         $key = [Console]::ReadKey($true)
         $s.StatusMessage = ""
 
