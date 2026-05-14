@@ -41,6 +41,7 @@ function Write-Lib {
 # ── 1. Preamble: win_util.ps1 up to (but not including) COMPILE:INSERT:LIBS ──
 foreach ($line in (Get-Content (Join-Path $ROOT "win_util.ps1"))) {
     if ($line -match '#\s*COMPILE:INSERT:LIBS') { break }
+    if ($line -match '#\s*COMPILE:SKIP\b')      { continue }
     Write-Line $line
 }
 

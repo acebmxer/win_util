@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 5.1 # COMPILE:SKIP
 <#
 .SYNOPSIS
     Windows Utilities Installer - interactive multi-select TUI for installing,
