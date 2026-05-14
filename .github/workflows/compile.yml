@@ -1,0 +1,29 @@
+name: Compile
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'win_util.ps1'
+      - 'lib/**'
+      - 'Compile.ps1'
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile dist/win_util.ps1
+        shell: pwsh
+        run: ./Compile.ps1
+
+      - name: Commit compiled output
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dist/win_util.ps1
+          git diff --staged --quiet || (git commit -m "chore: compile dist/win_util.ps1 [skip ci]" && git push)
