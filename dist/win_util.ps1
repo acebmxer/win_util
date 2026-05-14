@@ -127,7 +127,7 @@ function Invoke-WingetUpdate {
 #endregion
 
 #region --- installers ---
-# Utility registry — defines Register-Utility and standard winget wrappers
+# Utility registry â€” defines Register-Utility and standard winget wrappers
 
 $script:Registry = [System.Collections.Generic.List[hashtable]]::new()
 
@@ -179,7 +179,7 @@ function Get-UtilityFunctions {
 #endregion
 
 #region --- utilities-list ---
-# All registered utilities — add a Register-Utility line here to add a new tool.
+# All registered utilities â€” add a Register-Utility line here to add a new tool.
 # Custom install/uninstall/update/test logic: define Install-SafeName, etc. anywhere in the loaded files.
 
 Register-Utility @{ Name = "Google Chrome";            Id = "Google.Chrome";                   Category = "Browsers" }
@@ -702,12 +702,54 @@ function Assert-Winget {
     }
 }
 
+function Sync-DesktopIcon {
+    # Ensures %LOCALAPPDATA%\win_util\win_util.ico matches the upstream version
+    # by comparing SHA256 with assets/win_util.ico.sha256 in the repo. Returns
+    # the local icon path on success, or $null if the icon couldn't be fetched.
+    #
+    # Runs on every launch so icon changes propagate to existing installs without
+    # any user action.
+    $iconDir  = Join-Path $env:LOCALAPPDATA 'win_util'
+    $iconPath = Join-Path $iconDir 'win_util.ico'
+    $iconUrl  = 'https://raw.githubusercontent.com/acebmxer/win_util/main/assets/win_util.ico'
+    $hashUrl  = 'https://raw.githubusercontent.com/acebmxer/win_util/main/assets/win_util.ico.sha256'
+
+    try {
+        if (-not (Test-Path $iconDir)) { New-Item -ItemType Directory -Path $iconDir -Force | Out-Null }
+
+        $remoteHash = $null
+        try {
+            $remoteHash = (Invoke-WebRequest -Uri $hashUrl -UseBasicParsing -ErrorAction Stop).Content.Trim().ToLower()
+        } catch {
+            # If the manifest fetch fails (offline, GitHub down), keep whatever
+            # icon we already have rather than aborting the shortcut entirely.
+            if (Test-Path $iconPath) { return $iconPath } else { return $null }
+        }
+
+        $localHash = $null
+        if (Test-Path $iconPath) {
+            $localHash = (Get-FileHash -Path $iconPath -Algorithm SHA256).Hash.ToLower()
+        }
+
+        if ($localHash -ne $remoteHash) {
+            Invoke-WebRequest -Uri $iconUrl -OutFile $iconPath -UseBasicParsing -ErrorAction Stop
+        }
+        return $iconPath
+    } catch {
+        if (Test-Path $iconPath) { return $iconPath } else { return $null }
+    }
+}
+
 function New-DesktopShortcut {
-    # Silently creates a "Win Util" desktop shortcut if one doesn't already exist.
-    # Used so `irm .../win_util.ps1 | iex` self-installs on first run.
+    # Silently creates a "Win Util" desktop shortcut and keeps its icon in sync
+    # with the upstream copy. Used so `irm .../win_util.ps1 | iex` self-installs.
     $desktop      = [Environment]::GetFolderPath('Desktop')
     $shortcutPath = Join-Path $desktop 'Win Util.lnk'
-    if (Test-Path $shortcutPath) { return }
+
+    # Always sync the icon, even if the shortcut already exists, so icon updates
+    # in the repo propagate on the next launch.
+    $iconPath = Sync-DesktopIcon
+    $iconLoc  = if ($iconPath) { "$iconPath,0" } else { $null }
 
     try {
         $psExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -715,26 +757,27 @@ function New-DesktopShortcut {
         $cmd      = "& ([scriptblock]::Create((irm '$url')))"
         $psArgs   = "-NoExit -ExecutionPolicy Bypass -NoProfile -Command `"$cmd`""
 
-        # Download the PozzaTech icon to a stable per-user location so the
-        # shortcut works for remote `irm | iex` users who have no local copy.
-        $iconDir  = Join-Path $env:LOCALAPPDATA 'win_util'
-        $iconPath = Join-Path $iconDir 'win_util.ico'
-        if (-not (Test-Path $iconPath)) {
-            try {
-                if (-not (Test-Path $iconDir)) { New-Item -ItemType Directory -Path $iconDir -Force | Out-Null }
-                $iconUrl = 'https://raw.githubusercontent.com/acebmxer/win_util/main/assets/win_util.ico'
-                Invoke-WebRequest -Uri $iconUrl -OutFile $iconPath -UseBasicParsing -ErrorAction Stop
-            } catch {
-                $iconPath = $null  # fall back to default PowerShell icon
+        $shell = New-Object -ComObject WScript.Shell
+
+        if (Test-Path $shortcutPath) {
+            # Shortcut exists. Update its icon reference if the icon location
+            # has drifted (e.g. a previous run fell back to the powershell.exe
+            # icon and now the .ico is available). Touching .Save() also bumps
+            # the .lnk's mtime so Explorer re-reads the icon on next refresh.
+            $existing = $shell.CreateShortcut($shortcutPath)
+            $desired  = if ($iconLoc) { $iconLoc } else { "$psExe,0" }
+            if ($existing.IconLocation -ne $desired) {
+                $existing.IconLocation = $desired
+                $existing.Save()
             }
+            return
         }
 
-        $shell    = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($shortcutPath)
         $shortcut.TargetPath       = $psExe
         $shortcut.Arguments        = $psArgs
         $shortcut.WorkingDirectory = $env:USERPROFILE
-        $shortcut.IconLocation     = if ($iconPath) { "$iconPath,0" } else { "$psExe,0" }
+        $shortcut.IconLocation     = if ($iconLoc) { $iconLoc } else { "$psExe,0" }
         $shortcut.Description      = 'Windows Utilities Installer (win_util)'
         $shortcut.Save()
 
