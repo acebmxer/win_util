@@ -12,13 +12,13 @@ function Test-WingetInstalled {
 
 function Get-WingetVersion {
     param([string]$Id)
+    # winget aligns columns with single spaces when content fits tightly, so splitting
+    # on >=2 spaces collapses Name+Id+Version into one field. Anchor on the Id token
+    # and grab the next whitespace-separated token, which is always the version.
+    $pattern = '\b' + [regex]::Escape($Id) + '\s+(\S+)'
     $lines = winget list --id $Id --exact --accept-source-agreements 2>&1
     foreach ($line in $lines) {
-        if ($line -match [regex]::Escape($Id)) {
-            # winget list columns: Name | Id | Version | Available | Source
-            $parts = $line -split '\s{2,}'
-            if ($parts.Count -ge 3) { return $parts[2].Trim() }
-        }
+        if ($line -match $pattern) { return $Matches[1].Trim() }
     }
     return $null
 }
