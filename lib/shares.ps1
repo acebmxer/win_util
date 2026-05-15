@@ -253,6 +253,78 @@ function Enable-NfsClient {
     }
 }
 
+# Drives mapped from an elevated token (Administrator) are not visible to the
+# matching non-elevated token (Explorer, normal shells). EnableLinkedConnections
+# tells Windows to mirror mappings between the linked tokens of one user.
+# See: https://learn.microsoft.com/troubleshoot/windows-client/networking/mapped-drives-not-available-from-elevated-command
+function Test-LinkedConnectionsEnabled {
+    try {
+        $v = Get-ItemPropertyValue `
+                -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+                -Name 'EnableLinkedConnections' -ErrorAction Stop
+        return [int]$v -eq 1
+    } catch {
+        return $false
+    }
+}
+
+function Test-IsElevated {
+    try {
+        $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+        return (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
+
+function Enable-LinkedConnections {
+    $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    try {
+        if (-not (Test-Path $key)) {
+            New-Item -Path $key -Force -ErrorAction Stop | Out-Null
+        }
+        New-ItemProperty -Path $key -Name 'EnableLinkedConnections' `
+            -PropertyType DWord -Value 1 -Force -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        Write-Host "  Failed to set EnableLinkedConnections: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+function Invoke-EnableLinkedConnections {
+    Write-Host "  [Registry]  EnableLinkedConnections (cross-session drive visibility)" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Drives mapped from an elevated (Administrator) shell are hidden from"
+    Write-Host "  Explorer and normal shells, because each token gets its own drive"
+    Write-Host "  namespace. Setting EnableLinkedConnections=1 mirrors mappings between"
+    Write-Host "  the elevated and non-elevated tokens of the same user."
+    Write-Host ""
+    Write-Host "  Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -ForegroundColor DarkGray
+    Write-Host "  Value:    EnableLinkedConnections (DWORD) = 1" -ForegroundColor DarkGray
+    Write-Host ""
+
+    if (Test-LinkedConnectionsEnabled) {
+        Write-Host "  Already enabled. If drives still aren't visible, sign out and back in." -ForegroundColor Green
+        $global:LASTEXITCODE = 0
+        return
+    }
+
+    $ans = Read-Host "  Enable now? [Y/n]"
+    if ($ans -match '^(n|no)$') {
+        Write-Host "  Aborted." -ForegroundColor Yellow
+        $global:LASTEXITCODE = 1
+        return
+    }
+
+    if (Enable-LinkedConnections) {
+        Write-Host "  EnableLinkedConnections set to 1." -ForegroundColor Green
+        Write-Host "  Sign out and back in (or reboot) for it to take effect." -ForegroundColor Yellow
+        $global:LASTEXITCODE = 0
+    } else {
+        $global:LASTEXITCODE = 1
+    }
+}
+
 function Invoke-MountNfsShare {
     Write-Host "  [mount.exe]  Mount an NFS export" -ForegroundColor Cyan
 
@@ -270,6 +342,24 @@ function Invoke-MountNfsShare {
             $global:LASTEXITCODE = 0
             return
         }
+    }
+
+    # If we're running elevated, Explorer / normal shells will not see the
+    # mounted drives unless EnableLinkedConnections is set. Offer to fix it
+    # now so the user doesn't mount three shares and then wonder where they went.
+    if ((Test-IsElevated) -and -not (Test-LinkedConnectionsEnabled)) {
+        Write-Host ""
+        Write-Host "  Note: this session is elevated. Drives mounted from an elevated" -ForegroundColor Yellow
+        Write-Host "  shell are hidden from Explorer and normal shells unless the" -ForegroundColor Yellow
+        Write-Host "  EnableLinkedConnections registry value is set." -ForegroundColor Yellow
+        $ans = Read-Host "  Enable cross-session drive visibility now? [Y/n]"
+        if ($ans -notmatch '^(n|no)$') {
+            if (Enable-LinkedConnections) {
+                Write-Host "  EnableLinkedConnections set. Sign out / reboot to take effect." -ForegroundColor Green
+                Write-Host "  (Mounts you create now will appear after the next sign-in.)" -ForegroundColor DarkGray
+            }
+        }
+        Write-Host ""
     }
 
     $server = Read-NonEmptyHost -Prompt 'NFS server (IP or hostname)'
@@ -626,5 +716,11 @@ function Install-DisconnectShare   { Invoke-DisconnectShare }
 function Update-DisconnectShare    { Invoke-DisconnectShare }
 function Uninstall-DisconnectShare { Invoke-DisconnectShare }
 function Test-DisconnectShare      { return $false }
+
+# "Enable Linked Connections" -> EnableLinkedConnections
+function Install-EnableLinkedConnections   { Invoke-EnableLinkedConnections }
+function Update-EnableLinkedConnections    { Invoke-EnableLinkedConnections }
+function Uninstall-EnableLinkedConnections { Invoke-EnableLinkedConnections }
+function Test-EnableLinkedConnections      { return $false }
 
 #endregion
