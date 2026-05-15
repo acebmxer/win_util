@@ -1418,10 +1418,14 @@ function Resolve-IndexSelection {
                 }
             }
         }
-        return ,$picked
+        # Return as a single array object; callers wrap with @() to normalize.
+        # Using `,$picked` here would double-wrap, making foreach treat the
+        # whole selection as one item (a recent regression that mapped every
+        # selected share to the same drive letter).
+        return $picked
     }
 
-    return ,@($s)
+    return @($s)
 }
 
 #endregion

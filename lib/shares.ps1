@@ -98,42 +98,43 @@ function Invoke-MapSmbShare {
         return
     }
 
-    # Pre-allocate one drive letter per share; the user can override the first
-    # and we auto-pick subsequent free letters.
-    $suggested = Get-AvailableDriveLetter
-    $letterIn  = Read-Host "  Drive letter to assign first mount [default: $suggested]"
-    if ([string]::IsNullOrWhiteSpace($letterIn)) { $letterIn = $suggested }
-    $firstLetter = $letterIn.TrimEnd(':','\').ToUpper()
-    if ($firstLetter.Length -ne 1 -or $firstLetter -notmatch '^[A-Z]$') {
-        Write-Host "  Invalid drive letter '$letterIn'." -ForegroundColor Red
-        $global:LASTEXITCODE = 1
-        return
-    }
-
+    # Prompt for a drive letter per share. The suggested default is the next
+    # free letter scanning Z -> D, skipping ones already chosen in this run.
     $assignments = @()
     $usedLetters = @()
     foreach ($sh in $selectedShares) {
-        $letter = $null
-        if ($assignments.Count -eq 0) {
-            $letter = $firstLetter
-        } else {
-            foreach ($c in [char[]]('ZYXWVUTSRQPONMLKJIHGFED')) {
-                $cand = "$c"
-                if ($usedLetters -notcontains $cand -and (Test-DriveLetterFree "$cand`:")) {
-                    $letter = $cand; break
-                }
+        $suggested = $null
+        foreach ($c in [char[]]('ZYXWVUTSRQPONMLKJIHGFED')) {
+            $cand = "$c"
+            if ($usedLetters -notcontains $cand -and (Test-DriveLetterFree "$cand`:")) {
+                $suggested = $cand; break
             }
         }
-        if (-not $letter) {
+        if (-not $suggested) {
             Write-Host "  Ran out of available drive letters." -ForegroundColor Red
             $global:LASTEXITCODE = 1
             return
         }
-        if (($usedLetters -contains $letter) -or -not (Test-DriveLetterFree "$letter`:")) {
-            Write-Host "  Drive $letter`: is already in use." -ForegroundColor Red
-            $global:LASTEXITCODE = 1
-            return
+
+        while ($true) {
+            $letterIn = Read-Host ("  Drive letter for \\{0}\{1} [default: {2}:]" -f $server, $sh, $suggested)
+            if ([string]::IsNullOrWhiteSpace($letterIn)) { $letterIn = $suggested }
+            $letter = $letterIn.TrimEnd(':','\').ToUpper()
+            if ($letter.Length -ne 1 -or $letter -notmatch '^[A-Z]$') {
+                Write-Host "  Invalid drive letter '$letterIn'." -ForegroundColor Red
+                continue
+            }
+            if ($usedLetters -contains $letter) {
+                Write-Host "  $letter`: already chosen for another share in this run." -ForegroundColor Red
+                continue
+            }
+            if (-not (Test-DriveLetterFree "$letter`:")) {
+                Write-Host "  Drive $letter`: is already in use on this system." -ForegroundColor Red
+                continue
+            }
+            break
         }
+
         $usedLetters += $letter
         $assignments += [pscustomobject]@{
             Share      = $sh
@@ -310,44 +311,46 @@ function Invoke-MountNfsShare {
         return
     }
 
-    # Pre-allocate one drive letter per export; the user can override the first
-    # and we auto-pick subsequent free letters.
-    $suggested = Get-AvailableDriveLetter
-    $letterIn  = Read-Host "  Drive letter to assign first mount [default: $suggested]"
-    if ([string]::IsNullOrWhiteSpace($letterIn)) { $letterIn = $suggested }
-    $firstLetter = $letterIn.TrimEnd(':','\').ToUpper()
-    if ($firstLetter.Length -ne 1 -or $firstLetter -notmatch '^[A-Z]$') {
-        Write-Host "  Invalid drive letter '$letterIn'." -ForegroundColor Red
-        $global:LASTEXITCODE = 1
-        return
-    }
-
+    # Prompt for a drive letter per export. The suggested default is the next
+    # free letter scanning Z -> D, skipping ones already chosen in this run.
     $assignments = @()
     $usedLetters = @()
     foreach ($exp in $selectedExports) {
-        $letter = $null
-        if ($assignments.Count -eq 0) {
-            $letter = $firstLetter
-        } else {
-            foreach ($c in [char[]]('ZYXWVUTSRQPONMLKJIHGFED')) {
-                $cand = "$c"
-                if ($usedLetters -notcontains $cand -and (Test-DriveLetterFree "$cand`:")) {
-                    $letter = $cand; break
-                }
+        $unc = "\\$server" + ($exp -replace '/', '\')
+
+        $suggested = $null
+        foreach ($c in [char[]]('ZYXWVUTSRQPONMLKJIHGFED')) {
+            $cand = "$c"
+            if ($usedLetters -notcontains $cand -and (Test-DriveLetterFree "$cand`:")) {
+                $suggested = $cand; break
             }
         }
-        if (-not $letter) {
+        if (-not $suggested) {
             Write-Host "  Ran out of available drive letters." -ForegroundColor Red
             $global:LASTEXITCODE = 1
             return
         }
-        if (($usedLetters -contains $letter) -or -not (Test-DriveLetterFree "$letter`:")) {
-            Write-Host "  Drive $letter`: is already in use." -ForegroundColor Red
-            $global:LASTEXITCODE = 1
-            return
+
+        while ($true) {
+            $letterIn = Read-Host ("  Drive letter for {0} [default: {1}:]" -f $unc, $suggested)
+            if ([string]::IsNullOrWhiteSpace($letterIn)) { $letterIn = $suggested }
+            $letter = $letterIn.TrimEnd(':','\').ToUpper()
+            if ($letter.Length -ne 1 -or $letter -notmatch '^[A-Z]$') {
+                Write-Host "  Invalid drive letter '$letterIn'." -ForegroundColor Red
+                continue
+            }
+            if ($usedLetters -contains $letter) {
+                Write-Host "  $letter`: already chosen for another export in this run." -ForegroundColor Red
+                continue
+            }
+            if (-not (Test-DriveLetterFree "$letter`:")) {
+                Write-Host "  Drive $letter`: is already in use on this system." -ForegroundColor Red
+                continue
+            }
+            break
         }
+
         $usedLetters += $letter
-        $unc = "\\$server" + ($exp -replace '/', '\')
         $assignments += [pscustomobject]@{
             Export = $exp
             Letter = $letter
@@ -459,10 +462,14 @@ function Resolve-IndexSelection {
                 }
             }
         }
-        return ,$picked
+        # Return as a single array object; callers wrap with @() to normalize.
+        # Using `,$picked` here would double-wrap, making foreach treat the
+        # whole selection as one item (a recent regression that mapped every
+        # selected share to the same drive letter).
+        return $picked
     }
 
-    return ,@($s)
+    return @($s)
 }
 
 #endregion
