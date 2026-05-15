@@ -1029,6 +1029,7 @@ function Invoke-MapSmbShare {
         }
     } catch { }
 
+    $selectedShares = @()
     if ($shareList -and $shareList.Count -gt 0) {
         Write-Host ""
         Write-Host "  Available shares:" -ForegroundColor Yellow
@@ -1036,41 +1037,69 @@ function Invoke-MapSmbShare {
             Write-Host ("    {0}) {1}" -f ($i + 1), $shareList[$i])
         }
         Write-Host ""
-        $sel = Read-Host "  Select share number, or type a custom share name"
-        $share = if ($sel -match '^\d+$' -and [int]$sel -ge 1 -and [int]$sel -le $shareList.Count) {
-            $shareList[[int]$sel - 1]
-        } else {
-            $sel
-        }
+        Write-Host "  Tip: select multiple with commas/ranges (e.g. 1,3,5 or 2-4), or 'all'." -ForegroundColor DarkGray
+        $sel = Read-Host "  Select share number(s), or type a custom share name"
+        $selectedShares = @(Resolve-IndexSelection -Selection $sel -Items $shareList)
     } else {
         Write-Host "  (Could not enumerate shares automatically -enter manually.)" -ForegroundColor DarkYellow
-        $share = Read-NonEmptyHost -Prompt 'Share name (e.g. data)'
+        $manual = Read-NonEmptyHost -Prompt 'Share name (e.g. data)'
+        $selectedShares = @($manual)
     }
 
-    if ([string]::IsNullOrWhiteSpace($share)) {
+    # Normalize share names.
+    $selectedShares = @($selectedShares |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { $_.Trim().TrimStart('\','/') })
+
+    if ($selectedShares.Count -eq 0) {
         Write-Host "  No share selected, aborting." -ForegroundColor Yellow
         $global:LASTEXITCODE = 1
         return
     }
-    $share = $share.Trim().TrimStart('\','/')
 
-    $remotePath = "\\$server\$share"
-
+    # Pre-allocate one drive letter per share; the user can override the first
+    # and we auto-pick subsequent free letters.
     $suggested = Get-AvailableDriveLetter
-    $letterIn  = Read-Host "  Drive letter to assign [default: $suggested]"
+    $letterIn  = Read-Host "  Drive letter to assign first mount [default: $suggested]"
     if ([string]::IsNullOrWhiteSpace($letterIn)) { $letterIn = $suggested }
-    $letter = $letterIn.TrimEnd(':','\').ToUpper()
-    if ($letter.Length -ne 1 -or $letter -notmatch '^[A-Z]$') {
+    $firstLetter = $letterIn.TrimEnd(':','\').ToUpper()
+    if ($firstLetter.Length -ne 1 -or $firstLetter -notmatch '^[A-Z]$') {
         Write-Host "  Invalid drive letter '$letterIn'." -ForegroundColor Red
         $global:LASTEXITCODE = 1
         return
     }
-    $localPath = "$letter`:"
 
-    if (-not (Test-DriveLetterFree $localPath)) {
-        Write-Host "  Drive $localPath is already in use." -ForegroundColor Red
-        $global:LASTEXITCODE = 1
-        return
+    $assignments = @()
+    $usedLetters = @()
+    foreach ($sh in $selectedShares) {
+        $letter = $null
+        if ($assignments.Count -eq 0) {
+            $letter = $firstLetter
+        } else {
+            foreach ($c in [char[]]('ZYXWVUTSRQPONMLKJIHGFED')) {
+                $cand = "$c"
+                if ($usedLetters -notcontains $cand -and (Test-DriveLetterFree "$cand`:")) {
+                    $letter = $cand; break
+                }
+            }
+        }
+        if (-not $letter) {
+            Write-Host "  Ran out of available drive letters." -ForegroundColor Red
+            $global:LASTEXITCODE = 1
+            return
+        }
+        if (($usedLetters -contains $letter) -or -not (Test-DriveLetterFree "$letter`:")) {
+            Write-Host "  Drive $letter`: is already in use." -ForegroundColor Red
+            $global:LASTEXITCODE = 1
+            return
+        }
+        $usedLetters += $letter
+        $assignments += [pscustomobject]@{
+            Share      = $sh
+            Letter     = $letter
+            LocalPath  = "$letter`:"
+            RemotePath = "\\$server\$sh"
+        }
     }
 
     $user = Read-Host "  Username (DOMAIN\user or user; blank for current login)"
@@ -1086,10 +1115,13 @@ function Invoke-MapSmbShare {
     $persistent = -not ($persistAns -match '^(n|no)$')
 
     Write-Host ""
-    Write-Host "  Remote:     $remotePath"
-    Write-Host "  Local:      $localPath"
+    Write-Host "  Server:     $server"
     Write-Host "  Persistent: $persistent"
     Write-Host "  User:       $(if ($user) { $user } else { '(current login)' })"
+    Write-Host "  Mounts:"
+    foreach ($a in $assignments) {
+        Write-Host ("    {0}  <-  {1}" -f $a.LocalPath, $a.RemotePath)
+    }
     Write-Host ""
     $confirm = Read-Host "  Proceed? [y/N]"
     if ($confirm -notmatch '^(y|yes)$') {
@@ -1100,7 +1132,7 @@ function Invoke-MapSmbShare {
 
     # Store credentials in Windows Credential Manager so the persistent mapping
     # can reconnect at login without prompting. cmdkey writes to the user's
-    # vault; the entry is keyed on the server name.
+    # vault; the entry is keyed on the server name (shared across all shares).
     if ($cred -and $persistent) {
         try {
             & cmdkey /add:$server /user:$user /pass:$passPlain | Out-Null
@@ -1110,25 +1142,39 @@ function Invoke-MapSmbShare {
         }
     }
 
+    $ok = 0
+    $fail = 0
     try {
-        $params = @{
-            LocalPath  = $localPath
-            RemotePath = $remotePath
-            Persistent = $persistent
-            ErrorAction = 'Stop'
+        foreach ($a in $assignments) {
+            Write-Host ""
+            Write-Host ("  Mapping {0} -> {1}" -f $a.RemotePath, $a.LocalPath) -ForegroundColor Cyan
+            try {
+                $params = @{
+                    LocalPath   = $a.LocalPath
+                    RemotePath  = $a.RemotePath
+                    Persistent  = $persistent
+                    ErrorAction = 'Stop'
+                }
+                if ($cred) { $params.UserName = $user; $params.Password = $passPlain }
+                New-SmbMapping @params | Out-Null
+                Write-Host "  Mapped $($a.RemotePath) to $($a.LocalPath)." -ForegroundColor Green
+                $ok++
+            } catch {
+                Write-Host "  New-SmbMapping failed: $($_.Exception.Message)" -ForegroundColor Red
+                $fail++
+            }
         }
-        if ($cred) { $params.UserName = $user; $params.Password = $passPlain }
-        New-SmbMapping @params | Out-Null
-        Write-Host "  Mapped $remotePath to $localPath." -ForegroundColor Green
-        $global:LASTEXITCODE = 0
-    } catch {
-        Write-Host "  New-SmbMapping failed: $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "  Tip: verify the server is reachable and credentials are correct." -ForegroundColor DarkYellow
-        $global:LASTEXITCODE = 1
     } finally {
         # Best-effort scrub of the plaintext password from memory.
         if ($passPlain) { $passPlain = $null }
     }
+
+    Write-Host ""
+    Write-Host ("  Done. Mapped: {0}  Failed: {1}" -f $ok, $fail) -ForegroundColor $(if ($fail -eq 0) { 'Green' } else { 'Yellow' })
+    if ($fail -gt 0) {
+        Write-Host "  Tip: verify the server is reachable and credentials are correct." -ForegroundColor DarkYellow
+    }
+    $global:LASTEXITCODE = if ($fail -eq 0) { 0 } else { 1 }
 }
 
 #endregion
@@ -1199,6 +1245,7 @@ function Invoke-MountNfsShare {
         }
     } catch { }
 
+    $selectedExports = @()
     if ($exports -and $exports.Count -gt 0) {
         Write-Host ""
         Write-Host "  Available exports:" -ForegroundColor Yellow
@@ -1206,51 +1253,77 @@ function Invoke-MountNfsShare {
             Write-Host ("    {0}) {1}" -f ($i + 1), $exports[$i])
         }
         Write-Host ""
-        $sel = Read-Host "  Select export number, or type a custom export path"
-        $export = if ($sel -match '^\d+$' -and [int]$sel -ge 1 -and [int]$sel -le $exports.Count) {
-            $exports[[int]$sel - 1]
-        } else {
-            $sel
-        }
+        Write-Host "  Tip: select multiple with commas/ranges (e.g. 1,3,5 or 2-4), or 'all'." -ForegroundColor DarkGray
+        $sel = Read-Host "  Select export number(s), or type a custom export path"
+
+        $selectedExports = @(Resolve-IndexSelection -Selection $sel -Items $exports)
     } else {
         Write-Host "  (Could not enumerate exports -enter manually.)" -ForegroundColor DarkYellow
-        $export = Read-NonEmptyHost -Prompt 'Export path (e.g. /mnt/data)'
+        $manual = Read-NonEmptyHost -Prompt 'Export path (e.g. /mnt/data)'
+        $selectedExports = @($manual.Trim())
     }
 
-    if ([string]::IsNullOrWhiteSpace($export)) {
+    if ($selectedExports.Count -eq 0) {
         Write-Host "  No export selected, aborting." -ForegroundColor Yellow
         $global:LASTEXITCODE = 1
         return
     }
-    $export = $export.Trim()
 
+    # Pre-allocate one drive letter per export; the user can override the first
+    # and we auto-pick subsequent free letters.
     $suggested = Get-AvailableDriveLetter
-    $letterIn  = Read-Host "  Drive letter to assign [default: $suggested]"
+    $letterIn  = Read-Host "  Drive letter to assign first mount [default: $suggested]"
     if ([string]::IsNullOrWhiteSpace($letterIn)) { $letterIn = $suggested }
-    $letter = $letterIn.TrimEnd(':','\').ToUpper()
-    if ($letter.Length -ne 1 -or $letter -notmatch '^[A-Z]$') {
+    $firstLetter = $letterIn.TrimEnd(':','\').ToUpper()
+    if ($firstLetter.Length -ne 1 -or $firstLetter -notmatch '^[A-Z]$') {
         Write-Host "  Invalid drive letter '$letterIn'." -ForegroundColor Red
         $global:LASTEXITCODE = 1
         return
     }
-    if (-not (Test-DriveLetterFree "$letter`:")) {
-        Write-Host "  Drive $letter`: is already in use." -ForegroundColor Red
-        $global:LASTEXITCODE = 1
-        return
-    }
 
-    # Windows mount.exe uses \\server\export syntax with backslashes.
-    $unc = "\\$server" + ($export -replace '/', '\')
+    $assignments = @()
+    $usedLetters = @()
+    foreach ($exp in $selectedExports) {
+        $letter = $null
+        if ($assignments.Count -eq 0) {
+            $letter = $firstLetter
+        } else {
+            foreach ($c in [char[]]('ZYXWVUTSRQPONMLKJIHGFED')) {
+                $cand = "$c"
+                if ($usedLetters -notcontains $cand -and (Test-DriveLetterFree "$cand`:")) {
+                    $letter = $cand; break
+                }
+            }
+        }
+        if (-not $letter) {
+            Write-Host "  Ran out of available drive letters." -ForegroundColor Red
+            $global:LASTEXITCODE = 1
+            return
+        }
+        if (($usedLetters -contains $letter) -or -not (Test-DriveLetterFree "$letter`:")) {
+            Write-Host "  Drive $letter`: is already in use." -ForegroundColor Red
+            $global:LASTEXITCODE = 1
+            return
+        }
+        $usedLetters += $letter
+        $unc = "\\$server" + ($exp -replace '/', '\')
+        $assignments += [pscustomobject]@{
+            Export = $exp
+            Letter = $letter
+            Unc    = $unc
+        }
+    }
 
     $persistAns = Read-Host "  Reconnect at sign-in? [Y/n]"
     $persistent = -not ($persistAns -match '^(n|no)$')
 
     Write-Host ""
     Write-Host "  Server:     $server"
-    Write-Host "  Export:     $export"
-    Write-Host "  Source:     $unc"
-    Write-Host "  Drive:      $letter`:"
     Write-Host "  Persistent: $persistent"
+    Write-Host "  Mounts:"
+    foreach ($a in $assignments) {
+        Write-Host ("    {0}:  <-  {1}" -f $a.Letter, $a.Unc)
+    }
     Write-Host ""
     $confirm = Read-Host "  Proceed? [y/N]"
     if ($confirm -notmatch '^(y|yes)$') {
@@ -1259,37 +1332,94 @@ function Invoke-MountNfsShare {
         return
     }
 
-    # -o anon mounts without sending UID/GID (anonymous). For UID-mapped access,
-    # users can set AnonymousUid/Gid in HKLM\Software\Microsoft\ClientForNFS\...
-    $mountArgs = @('-o','anon')
-    if ($persistent) { $mountArgs += @('-o','fileaccess=755','-o','rsize=32','-o','wsize=32') }
-    $mountArgs += @($unc, "$letter`:")
+    $ok = 0
+    $fail = 0
+    foreach ($a in $assignments) {
+        Write-Host ""
+        Write-Host ("  Mounting {0} -> {1}:" -f $a.Unc, $a.Letter) -ForegroundColor Cyan
 
-    try {
-        & mount.exe @mountArgs
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  Mounted $unc to $letter`:" -ForegroundColor Green
+        # -o anon mounts without sending UID/GID (anonymous). For UID-mapped access,
+        # users can set AnonymousUid/Gid in HKLM\Software\Microsoft\ClientForNFS\...
+        $mountArgs = @('-o','anon')
+        if ($persistent) { $mountArgs += @('-o','fileaccess=755','-o','rsize=32','-o','wsize=32') }
+        $mountArgs += @($a.Unc, "$($a.Letter):")
 
-            # mount.exe does not honor a "reconnect at logon" flag the way
-            # net use does. Persist by writing a logon script entry.
-            if ($persistent) {
-                $entry = "mount -o anon $unc $letter`:"
-                $startup = [Environment]::GetFolderPath('Startup')
-                $script  = Join-Path $startup 'win_util_nfs_mounts.cmd'
-                if (-not (Test-Path $script) -or -not (Select-String -Path $script -Pattern ([regex]::Escape($entry)) -SimpleMatch -Quiet)) {
-                    Add-Content -Path $script -Value $entry
-                    Write-Host "  Persistence: added to $script (runs at sign-in)." -ForegroundColor DarkGray
+        try {
+            & mount.exe @mountArgs
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  Mounted $($a.Unc) to $($a.Letter):" -ForegroundColor Green
+                $ok++
+
+                # mount.exe does not honor a "reconnect at logon" flag the way
+                # net use does. Persist by writing a logon script entry.
+                if ($persistent) {
+                    $entry = "mount -o anon $($a.Unc) $($a.Letter):"
+                    $startup = [Environment]::GetFolderPath('Startup')
+                    $script  = Join-Path $startup 'win_util_nfs_mounts.cmd'
+                    if (-not (Test-Path $script) -or -not (Select-String -Path $script -Pattern ([regex]::Escape($entry)) -SimpleMatch -Quiet)) {
+                        Add-Content -Path $script -Value $entry
+                        Write-Host "  Persistence: added to $script (runs at sign-in)." -ForegroundColor DarkGray
+                    }
+                }
+            } else {
+                Write-Host "  mount.exe exited $LASTEXITCODE." -ForegroundColor Red
+                $fail++
+            }
+        } catch {
+            Write-Host "  mount.exe failed: $($_.Exception.Message)" -ForegroundColor Red
+            $fail++
+        }
+    }
+
+    Write-Host ""
+    Write-Host ("  Done. Mounted: {0}  Failed: {1}" -f $ok, $fail) -ForegroundColor $(if ($fail -eq 0) { 'Green' } else { 'Yellow' })
+    $global:LASTEXITCODE = if ($fail -eq 0) { 0 } else { 1 }
+}
+
+function Resolve-IndexSelection {
+    # Parses a 1-based selection string against an item list. Accepts:
+    #   - a single number ("3")
+    #   - comma-separated numbers ("1,3,5")
+    #   - ranges ("2-4")
+    #   - mixed ("1,3-5,7")
+    #   - "all" / "*"
+    #   - any non-numeric string -> returned as a single literal entry
+    #     (so callers can fall back to "user typed a custom name/path")
+    param(
+        [string]$Selection,
+        [object[]]$Items
+    )
+    if ($null -eq $Selection) { return @() }
+    $s = $Selection.Trim()
+    if ([string]::IsNullOrWhiteSpace($s)) { return @() }
+
+    if ($s -match '^(all|\*)$') { return @($Items) }
+
+    if ($s -match '^[\d,\-\s]+$') {
+        $picked = New-Object 'System.Collections.Generic.List[object]'
+        $seen   = New-Object 'System.Collections.Generic.HashSet[int]'
+        foreach ($part in ($s -split ',')) {
+            $p = $part.Trim()
+            if (-not $p) { continue }
+            if ($p -match '^(\d+)-(\d+)$') {
+                $a = [int]$matches[1]; $b = [int]$matches[2]
+                if ($a -gt $b) { $tmp = $a; $a = $b; $b = $tmp }
+                for ($i = $a; $i -le $b; $i++) {
+                    if ($i -ge 1 -and $i -le $Items.Count -and $seen.Add($i)) {
+                        $picked.Add($Items[$i - 1])
+                    }
+                }
+            } elseif ($p -match '^\d+$') {
+                $i = [int]$p
+                if ($i -ge 1 -and $i -le $Items.Count -and $seen.Add($i)) {
+                    $picked.Add($Items[$i - 1])
                 }
             }
-            $global:LASTEXITCODE = 0
-        } else {
-            Write-Host "  mount.exe exited $LASTEXITCODE." -ForegroundColor Red
-            $global:LASTEXITCODE = $LASTEXITCODE
         }
-    } catch {
-        Write-Host "  mount.exe failed: $($_.Exception.Message)" -ForegroundColor Red
-        $global:LASTEXITCODE = 1
+        return @($picked)
     }
+
+    return @($s)
 }
 
 #endregion
@@ -1362,36 +1492,56 @@ function Invoke-DisconnectShare {
     }
     Write-Host "    0) Cancel"
     Write-Host ""
-    $sel = Read-Host "  Select share to disconnect"
-    if (-not ($sel -match '^\d+$') -or [int]$sel -lt 1 -or [int]$sel -gt $entries.Count) {
+    Write-Host "  Tip: select multiple with commas/ranges (e.g. 1,3,5 or 2-4), or 'all'." -ForegroundColor DarkGray
+    $sel = Read-Host "  Select share(s) to disconnect"
+
+    if ([string]::IsNullOrWhiteSpace($sel) -or $sel.Trim() -eq '0') {
         Write-Host "  Cancelled." -ForegroundColor Yellow
         $global:LASTEXITCODE = 0
         return
     }
-    $target = $entries[[int]$sel - 1]
 
-    try {
-        if ($target.Kind -eq 'SMB') {
-            Remove-SmbMapping -LocalPath $target.Local -Force -UpdateProfile -ErrorAction Stop
-            Write-Host "  Disconnected $($target.Local)." -ForegroundColor Green
-        } else {
-            & umount.exe $target.Local
-            if ($LASTEXITCODE -ne 0) { throw "umount.exe exited $LASTEXITCODE" }
-            Write-Host "  Unmounted $($target.Local)." -ForegroundColor Green
+    $targets = @(Resolve-IndexSelection -Selection $sel -Items $entries |
+        Where-Object { $_ -is [pscustomobject] })
 
-            # Clean the matching line from the persistence script if present.
-            $script = Join-Path ([Environment]::GetFolderPath('Startup')) 'win_util_nfs_mounts.cmd'
-            if (Test-Path $script) {
-                $kept = Get-Content $script | Where-Object { $_ -notmatch [regex]::Escape($target.Local) }
-                if ($kept) { Set-Content -Path $script -Value $kept -Encoding ASCII }
-                else       { Remove-Item $script -Force }
-            }
-        }
+    if ($targets.Count -eq 0) {
+        Write-Host "  No valid selection. Cancelled." -ForegroundColor Yellow
         $global:LASTEXITCODE = 0
-    } catch {
-        Write-Host "  Disconnect failed: $($_.Exception.Message)" -ForegroundColor Red
-        $global:LASTEXITCODE = 1
+        return
     }
+
+    $ok = 0
+    $fail = 0
+    foreach ($target in $targets) {
+        Write-Host ""
+        Write-Host ("  Disconnecting [{0}] {1}  ->  {2}" -f $target.Kind, $target.Local, $target.Remote) -ForegroundColor Cyan
+        try {
+            if ($target.Kind -eq 'SMB') {
+                Remove-SmbMapping -LocalPath $target.Local -Force -UpdateProfile -ErrorAction Stop
+                Write-Host "  Disconnected $($target.Local)." -ForegroundColor Green
+            } else {
+                & umount.exe $target.Local
+                if ($LASTEXITCODE -ne 0) { throw "umount.exe exited $LASTEXITCODE" }
+                Write-Host "  Unmounted $($target.Local)." -ForegroundColor Green
+
+                # Clean the matching line from the persistence script if present.
+                $script = Join-Path ([Environment]::GetFolderPath('Startup')) 'win_util_nfs_mounts.cmd'
+                if (Test-Path $script) {
+                    $kept = Get-Content $script | Where-Object { $_ -notmatch [regex]::Escape($target.Local) }
+                    if ($kept) { Set-Content -Path $script -Value $kept -Encoding ASCII }
+                    else       { Remove-Item $script -Force }
+                }
+            }
+            $ok++
+        } catch {
+            Write-Host "  Disconnect failed: $($_.Exception.Message)" -ForegroundColor Red
+            $fail++
+        }
+    }
+
+    Write-Host ""
+    Write-Host ("  Done. Disconnected: {0}  Failed: {1}" -f $ok, $fail) -ForegroundColor $(if ($fail -eq 0) { 'Green' } else { 'Yellow' })
+    $global:LASTEXITCODE = if ($fail -eq 0) { 0 } else { 1 }
 }
 
 #endregion
