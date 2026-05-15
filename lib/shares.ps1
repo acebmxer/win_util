@@ -437,8 +437,8 @@ function Resolve-IndexSelection {
     if ($s -match '^(all|\*)$') { return @($Items) }
 
     if ($s -match '^[\d,\-\s]+$') {
-        $picked = New-Object 'System.Collections.Generic.List[object]'
-        $seen   = New-Object 'System.Collections.Generic.HashSet[int]'
+        $picked = @()
+        $seen   = @{}
         foreach ($part in ($s -split ',')) {
             $p = $part.Trim()
             if (-not $p) { continue }
@@ -446,21 +446,23 @@ function Resolve-IndexSelection {
                 $a = [int]$matches[1]; $b = [int]$matches[2]
                 if ($a -gt $b) { $tmp = $a; $a = $b; $b = $tmp }
                 for ($i = $a; $i -le $b; $i++) {
-                    if ($i -ge 1 -and $i -le $Items.Count -and $seen.Add($i)) {
-                        $picked.Add($Items[$i - 1])
+                    if ($i -ge 1 -and $i -le $Items.Count -and -not $seen.ContainsKey($i)) {
+                        $seen[$i] = $true
+                        $picked += ,$Items[$i - 1]
                     }
                 }
             } elseif ($p -match '^\d+$') {
                 $i = [int]$p
-                if ($i -ge 1 -and $i -le $Items.Count -and $seen.Add($i)) {
-                    $picked.Add($Items[$i - 1])
+                if ($i -ge 1 -and $i -le $Items.Count -and -not $seen.ContainsKey($i)) {
+                    $seen[$i] = $true
+                    $picked += ,$Items[$i - 1]
                 }
             }
         }
-        return @($picked)
+        return ,$picked
     }
 
-    return @($s)
+    return ,@($s)
 }
 
 #endregion
