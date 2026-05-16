@@ -1005,6 +1005,63 @@ function Test-DriveLetterFree {
     return -not (Test-Path "$clean`:\")
 }
 
+function Update-ShellDriveView {
+    # Tell Explorer that drives were *removed* so their icons drop off any
+    # open "This PC" window immediately.
+    #
+    # This is reliable for removal only. SHChangeNotify with SHCNE_DRIVEREMOVED
+    # and SHCNF_FLUSH makes a running Explorer drop a stale drive icon. The
+    # mirror-image SHCNE_DRIVEADD does NOT reliably make Explorer pick up a
+    # newly mapped *network* drive -Explorer caches its network-drive list and
+    # only re-reads it on a new process or manual refresh. So for the "add"
+    # case callers use Restart-ExplorerForDrives instead.
+    #
+    #   SHCNE_DRIVEREMOVED (0x00000080) - a drive went away
+    #   SHCNF_PATHW        (0x00000005) - item args are wide-string paths
+    #   SHCNF_FLUSH        (0x00001000) - deliver synchronously
+    #
+    # $Letters is a list like 'X:','Y:'.
+    param([string[]]$Letters)
+    if (-not $Letters -or $Letters.Count -eq 0) { return }
+    try {
+        $sig = '[DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern void SHChangeNotify(int eventId, int flags, string item1, string item2);'
+        $sh = Add-Type -MemberDefinition $sig -Name 'WinUtilShellDrive' `
+                       -Namespace 'WinUtil' -PassThru -ErrorAction Stop
+        $flags = 0x00000005 -bor 0x00001000   # SHCNF_PATHW | SHCNF_FLUSH
+        foreach ($l in $Letters) {
+            $root = ($l.TrimEnd(':','\').ToUpper()) + ':\'
+            $sh::SHChangeNotify(0x00000080, $flags, $root, $null)   # SHCNE_DRIVEREMOVED
+        }
+        $sh::SHChangeNotify(0x08000000, 0x00001000, $null, $null)   # SHCNE_ASSOCCHANGED
+    } catch {
+        # Non-fatal: the drives are still gone; Explorer may just need a
+        # manual F5 or reopen to notice.
+    }
+}
+
+function Restart-ExplorerForDrives {
+    # Restart explorer.exe so newly mapped network drives appear immediately.
+    #
+    # Explorer caches its network-drive list; a freshly mapped drive does not
+    # show in an already-open window via any SHChangeNotify event (tested).
+    # The only reliable way to surface it without the user navigating/F5-ing
+    # is a fresh Explorer process. This closes open File Explorer windows and
+    # briefly reloads the taskbar/desktop (~2s); it is not a sign-out.
+    Write-Host "  Restarting Explorer so the new drives appear..." -ForegroundColor DarkGray
+    try {
+        Stop-Process -Name explorer -Force -ErrorAction Stop
+        Start-Sleep -Seconds 2
+        if (-not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) {
+            Start-Process explorer.exe
+        }
+        return $true
+    } catch {
+        Write-Host "  Could not restart Explorer: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        Write-Host "  The drives are mapped -press F5 in Explorer or reopen the window." -ForegroundColor DarkYellow
+        return $false
+    }
+}
+
 function Get-NfsMountExe {
     # Resolve the Windows "Client for NFS" mount.exe specifically.
     #
@@ -1029,6 +1086,28 @@ function Get-NfsMountExe {
 
 function Invoke-MapSmbShare {
     Write-Host "  [New-SmbMapping]  Map an SMB / CIFS share" -ForegroundColor Cyan
+
+    # If we're running elevated, Explorer / normal shells will not see the
+    # mapped drives unless EnableLinkedConnections is set. New-SmbMapping
+    # creates the mapping in the *elevated* token's drive namespace; the
+    # interactive (non-elevated) token Explorer uses gets a separate one.
+    # Offer to fix it now so the user doesn't map shares and then wonder
+    # why they never appear in Explorer.
+    if ((Test-IsElevated) -and -not (Test-LinkedConnectionsEnabled)) {
+        Write-Host ""
+        Write-Host "  Note: this session is elevated. Drives mapped from an elevated" -ForegroundColor Yellow
+        Write-Host "  shell are hidden from Explorer and normal shells unless the" -ForegroundColor Yellow
+        Write-Host "  EnableLinkedConnections registry value is set." -ForegroundColor Yellow
+        $ans = Read-Host "  Enable cross-session drive visibility now? [Y/n]"
+        if ($ans -notmatch '^(n|no)$') {
+            if (Enable-LinkedConnections) {
+                Write-Host "  EnableLinkedConnections set. Sign out / reboot to take effect." -ForegroundColor Green
+                Write-Host "  (Mappings you create now appear in Explorer after the next sign-in;" -ForegroundColor DarkGray
+                Write-Host "   make them persistent below so they survive the sign-out.)" -ForegroundColor DarkGray
+            }
+        }
+        Write-Host ""
+    }
 
     $server = Read-NonEmptyHost -Prompt 'SMB server (IP or hostname)'
 
@@ -1163,6 +1242,7 @@ function Invoke-MapSmbShare {
 
     $ok = 0
     $fail = 0
+    $addedLetters = @()   # drives actually mapped, for the Explorer refresh
     try {
         foreach ($a in $assignments) {
             Write-Host ""
@@ -1177,6 +1257,7 @@ function Invoke-MapSmbShare {
                 if ($cred) { $params.UserName = $user; $params.Password = $passPlain }
                 New-SmbMapping @params | Out-Null
                 Write-Host "  Mapped $($a.RemotePath) to $($a.LocalPath)." -ForegroundColor Green
+                $addedLetters += $a.LocalPath
                 $ok++
             } catch {
                 Write-Host "  New-SmbMapping failed: $($_.Exception.Message)" -ForegroundColor Red
@@ -1193,7 +1274,55 @@ function Invoke-MapSmbShare {
     if ($fail -gt 0) {
         Write-Host "  Tip: verify the server is reachable and credentials are correct." -ForegroundColor DarkYellow
     }
+
+    if ($ok -gt 0) {
+        Show-NewDriveExplorerHelp -Letters $addedLetters
+    }
     $global:LASTEXITCODE = if ($fail -eq 0) { 0 } else { 1 }
+}
+
+function Show-NewDriveExplorerHelp {
+    # After a successful mount, make the new drives visible in Explorer.
+    #
+    # Three cases:
+    #   * Non-elevated session  -the mapping is in the same token Explorer
+    #     uses; a quick Explorer restart surfaces it. (SHChangeNotify alone
+    #     does not -Explorer caches its network-drive list.)
+    #   * Elevated + EnableLinkedConnections set -the mapping will mirror to
+    #     the interactive token, but only at the next sign-in. Restarting
+    #     Explorer now won't help; tell the user to sign out/in.
+    #   * Elevated + the value not set -the drive is stuck in the elevated
+    #     token. Point the user at the 'Enable Linked Connections' utility.
+    param([string[]]$Letters)
+
+    $list = if ($Letters) { ($Letters -join ', ') } else { 'the new drives' }
+
+    if (Test-IsElevated) {
+        Write-Host ""
+        if (Test-LinkedConnectionsEnabled) {
+            Write-Host "  Mapped from an elevated shell: $list appear in Explorer" -ForegroundColor DarkYellow
+            Write-Host "  after your next sign-in (EnableLinkedConnections applies per" -ForegroundColor DarkYellow
+            Write-Host "  logon). Sign out and back in to see them now." -ForegroundColor DarkYellow
+        } else {
+            Write-Host "  Mapped from an elevated shell: $list won't be visible in" -ForegroundColor DarkYellow
+            Write-Host "  Explorer. Run the 'Enable Linked Connections' utility, then" -ForegroundColor DarkYellow
+            Write-Host "  sign out and back in." -ForegroundColor DarkYellow
+        }
+        return
+    }
+
+    # Non-elevated: a freshly mapped network drive does not show in an open
+    # Explorer window until Explorer is restarted (it caches the drive list).
+    # Offer it -a restart closes any open File Explorer windows.
+    Write-Host ""
+    Write-Host "  $list mapped. Explorer must restart to show new network drives" -ForegroundColor DarkYellow
+    Write-Host "  (open File Explorer windows will close; ~2s)." -ForegroundColor DarkGray
+    $ans = Read-Host "  Restart Explorer now? [Y/n]"
+    if ($ans -match '^(n|no)$') {
+        Write-Host "  Skipped. Press F5 in Explorer or reopen the window to see them." -ForegroundColor DarkGray
+        return
+    }
+    Restart-ExplorerForDrives | Out-Null
 }
 
 #endregion
@@ -1443,8 +1572,14 @@ function Invoke-MountNfsShare {
         return
     }
 
+    # Use the genuine Windows NFS mount.exe, not a Git/MSYS one that may
+    # shadow it on PATH (see Get-NfsMountExe).
+    $nfsMount = Get-NfsMountExe
+    if (-not $nfsMount) { $nfsMount = 'mount.exe' }
+
     $ok = 0
     $fail = 0
+    $addedLetters = @()   # drives actually mounted, for the Explorer refresh
     foreach ($a in $assignments) {
         Write-Host ""
         Write-Host ("  Mounting {0} -> {1}:" -f $a.Unc, $a.Letter) -ForegroundColor Cyan
@@ -1456,9 +1591,10 @@ function Invoke-MountNfsShare {
         $mountArgs += @($a.Unc, "$($a.Letter):")
 
         try {
-            & mount.exe @mountArgs
+            & $nfsMount @mountArgs
             if ($LASTEXITCODE -eq 0) {
                 Write-Host "  Mounted $($a.Unc) to $($a.Letter):" -ForegroundColor Green
+                $addedLetters += "$($a.Letter):"
                 $ok++
 
                 # mount.exe does not honor a "reconnect at logon" flag the way
@@ -1484,6 +1620,10 @@ function Invoke-MountNfsShare {
 
     Write-Host ""
     Write-Host ("  Done. Mounted: {0}  Failed: {1}" -f $ok, $fail) -ForegroundColor $(if ($fail -eq 0) { 'Green' } else { 'Yellow' })
+
+    if ($ok -gt 0) {
+        Show-NewDriveExplorerHelp -Letters $addedLetters
+    }
     $global:LASTEXITCODE = if ($fail -eq 0) { 0 } else { 1 }
 }
 
@@ -1636,6 +1776,53 @@ function Get-NfsMountEntries {
     return $list
 }
 
+function Clear-DriveLetterMapping {
+    # Thoroughly tear down a mapped/mounted drive letter so it disappears from
+    # Explorer and does not reconnect at the next sign-in.
+    #
+    # Why several steps: a single Remove-SmbMapping / umount only removes the
+    # mapping from the *calling* token's namespace and does not always purge
+    # the persistent profile entry. To make the drive truly gone we also:
+    #   * run `net use <letter> /delete /y` (clears the live mapping + profile),
+    #   * delete the persistent HKCU:\Network\<letter> registry key,
+    #   * when elevated, repeat the delete in the *interactive* (non-elevated)
+    #     token via a one-off scheduled task, so Explorer's namespace clears.
+    #
+    # Returns $true if the letter is no longer a drive afterwards.
+    param([string]$Letter)
+
+    $bare = $Letter.TrimEnd(':','\').ToUpper()    # e.g. "Z"
+    $dev  = "$bare`:"                              # e.g. "Z:"
+
+    # 1. net use /delete in the current token (covers SMB and NFS letters).
+    & net use $dev /delete /y 2>$null | Out-Null
+
+    # 2. Remove the persistent reconnect entry so it doesn't return at logon.
+    $regKey = "HKCU:\Network\$bare"
+    if (Test-Path $regKey) {
+        Remove-Item -Path $regKey -Force -Recurse -ErrorAction SilentlyContinue
+    }
+
+    # 3. If we're elevated, the interactive (Explorer) token has its own copy
+    #    of the mapping. A one-off scheduled task running at the LIMITED run
+    #    level executes `net use /delete` in that non-elevated token, so the
+    #    drive also disappears from Explorer rather than going stale.
+    if (Test-IsElevated) {
+        $taskName = "win_util_drvclear_$bare"
+        try {
+            schtasks.exe /create /tn $taskName /tr "cmd.exe /c net use $dev /delete /y" `
+                /sc once /st 00:00 /f /rl LIMITED 2>$null | Out-Null
+            schtasks.exe /run /tn $taskName 2>$null | Out-Null
+            Start-Sleep -Milliseconds 800
+        } catch {
+        } finally {
+            schtasks.exe /delete /tn $taskName /f 2>$null | Out-Null
+        }
+    }
+
+    return -not (Test-Path "$dev\")
+}
+
 function Invoke-DisconnectShare {
     Write-Host "  [Remove-SmbMapping / umount.exe]  Disconnect a mapped share" -ForegroundColor Cyan
 
@@ -1691,13 +1878,16 @@ function Invoke-DisconnectShare {
 
     $ok = 0
     $fail = 0
+    $removedLetters = @()   # drives actually torn down, for the Explorer refresh
     foreach ($target in $targets) {
         Write-Host ""
         Write-Host ("  Disconnecting [{0}] {1}  ->  {2}" -f $target.Kind, $target.Local, $target.Remote) -ForegroundColor Cyan
         try {
             if ($target.Kind -eq 'SMB') {
-                Remove-SmbMapping -LocalPath $target.Local -Force -UpdateProfile -ErrorAction Stop
-                Write-Host "  Disconnected $($target.Local)." -ForegroundColor Green
+                # Primary removal in the current token. -UpdateProfile drops the
+                # persistent reconnect entry. SilentlyContinue: a stale mapping
+                # can already be half-gone; Clear-DriveLetterMapping finishes it.
+                Remove-SmbMapping -LocalPath $target.Local -Force -UpdateProfile -ErrorAction SilentlyContinue
             } else {
                 # Prefer the Windows NFS umount.exe (sibling of the NFS
                 # mount.exe), avoiding the MSYS Git tool that may shadow it.
@@ -1709,14 +1899,7 @@ function Invoke-DisconnectShare {
                 }
                 if (-not $umount) { $umount = 'umount.exe' }
 
-                & $umount -f $target.Local
-                # umount.exe may report a stale/already-gone mount as an error;
-                # fall back to `net use /delete` which also clears the letter.
-                if ($LASTEXITCODE -ne 0) {
-                    & net use $target.Local /delete /y 2>$null | Out-Null
-                    if ($LASTEXITCODE -ne 0) { throw "umount.exe and 'net use /delete' both failed" }
-                }
-                Write-Host "  Unmounted $($target.Local)." -ForegroundColor Green
+                & $umount -f $target.Local 2>$null | Out-Null
 
                 # Clean the matching line from the persistence script if present.
                 $script = Join-Path ([Environment]::GetFolderPath('Startup')) 'win_util_nfs_mounts.cmd'
@@ -1726,11 +1909,29 @@ function Invoke-DisconnectShare {
                     else       { Remove-Item $script -Force }
                 }
             }
+
+            # Common teardown for both SMB and NFS: net use /delete, purge the
+            # persistent registry entry, and (when elevated) clear the drive in
+            # the interactive token so it really disappears from Explorer.
+            $gone = Clear-DriveLetterMapping -Letter $target.Local
+            if ($gone) {
+                Write-Host "  Disconnected $($target.Local) -no longer mapped." -ForegroundColor Green
+                $removedLetters += $target.Local
+            } else {
+                Write-Host "  $($target.Local) disconnected, but the letter is still" -ForegroundColor Yellow
+                Write-Host "  present. If it lingers in Explorer, sign out and back in." -ForegroundColor Yellow
+            }
             $ok++
         } catch {
             Write-Host "  Disconnect failed: $($_.Exception.Message)" -ForegroundColor Red
             $fail++
         }
+    }
+
+    # Tell Explorer the drives are gone so their icons drop off any open
+    # "This PC" window immediately, instead of lingering as stale entries.
+    if ($removedLetters.Count -gt 0) {
+        Update-ShellDriveView -Letters $removedLetters
     }
 
     Write-Host ""
