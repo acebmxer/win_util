@@ -1005,6 +1005,24 @@ function Test-DriveLetterFree {
     return -not (Test-Path "$clean`:\")
 }
 
+function Get-NfsMountExe {
+    # Resolve the Windows "Client for NFS" mount.exe specifically.
+    #
+    # Get-Command 'mount.exe' is unreliable here: if Git for Windows is
+    # installed, its MSYS mount.exe (C:\Program Files\Git\usr\bin\mount.exe)
+    # often shadows the real one on PATH. The MSYS tool prints fstab-style
+    # lines ("X: on /x type nfs ...") that the NFS-output parser cannot read,
+    # so disconnect/list silently miss every mounted NFS drive.
+    #
+    # The genuine NFS client always lives at %WINDIR%\System32\mount.exe.
+    $sys32 = Join-Path $env:WINDIR 'System32\mount.exe'
+    if (Test-Path $sys32) { return $sys32 }
+    # Fall back to PATH lookup only if System32 copy is absent.
+    $cmd = Get-Command 'mount.exe' -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
+
 #endregion
 
 #region --- SMB ---
@@ -1538,11 +1556,12 @@ function Invoke-ListShares {
         Write-Host "  Get-SmbMapping failed: $($_.Exception.Message)" -ForegroundColor Red
     }
 
-    if (Get-Command 'mount.exe' -ErrorAction SilentlyContinue) {
+    $nfsMount = Get-NfsMountExe
+    if ($nfsMount) {
         Write-Host ""
         Write-Host "  [mount.exe]  Mounted NFS shares:" -ForegroundColor Cyan
         try {
-            $nfsOut = & mount.exe 2>$null
+            $nfsOut = & $nfsMount 2>$null
             if ($LASTEXITCODE -eq 0 -and $nfsOut) {
                 $nfsOut | ForEach-Object { Write-Host "  $_" }
             } else {
@@ -1555,6 +1574,68 @@ function Invoke-ListShares {
     $global:LASTEXITCODE = 0
 }
 
+function Get-NfsMountEntries {
+    # Enumerate mounted NFS drives, returning {Local; Remote} objects.
+    #
+    # Two sources, merged and de-duplicated by drive letter:
+    #   1. The NFS mount.exe table. Its header is "Local  Remote  Properties";
+    #      a healthy mount prints "X:  \\server\export  UID=..." while a stale
+    #      one prints "Y:  \\server\export  Unavailable". Both forms start the
+    #      line with the letter followed by the UNC path, so one regex covers
+    #      them. (The MSYS Git mount.exe must be avoided -see Get-NfsMountExe.)
+    #   2. `net use`, which lists NFS drives as "NFS Network" even when
+    #      mount.exe omits them (e.g. mounts owned by a different logon token).
+    $found = @{}
+    $list  = @()
+
+    $nfsMount = Get-NfsMountExe
+    if ($nfsMount) {
+        try {
+            $nfsOut = & $nfsMount 2>$null
+            if ($LASTEXITCODE -eq 0 -and $nfsOut) {
+                foreach ($line in $nfsOut) {
+                    if ($line -match '^([A-Za-z]):\s+(\\\\\S+)') {
+                        $letter = $matches[1].ToUpper()
+                        if (-not $found.ContainsKey($letter)) {
+                            $found[$letter] = $true
+                            $list += [pscustomobject]@{ Kind='NFS'; Local="$letter`:"; Remote=$matches[2] }
+                        }
+                    }
+                }
+            }
+        } catch { }
+    }
+
+    # `net use` rows wrap: the drive letter + remote path are on one line,
+    # the network type ("NFS Network") may be on the next. Track the last
+    # letter/remote seen and attach the type when it arrives.
+    try {
+        $netUse = & net use 2>$null
+        if ($netUse) {
+            $pendLetter = $null; $pendRemote = $null
+            foreach ($line in $netUse) {
+                if ($line -match '([A-Za-z]):\s+(\\\\\S+)') {
+                    $pendLetter = $matches[1].ToUpper(); $pendRemote = $matches[2]
+                    # Type may already be on the same line.
+                    if ($line -match 'NFS' -and -not $found.ContainsKey($pendLetter)) {
+                        $found[$pendLetter] = $true
+                        $list += [pscustomobject]@{ Kind='NFS'; Local="$pendLetter`:"; Remote=$pendRemote }
+                        $pendLetter = $null
+                    }
+                } elseif ($pendLetter -and $line -match 'NFS') {
+                    if (-not $found.ContainsKey($pendLetter)) {
+                        $found[$pendLetter] = $true
+                        $list += [pscustomobject]@{ Kind='NFS'; Local="$pendLetter`:"; Remote=$pendRemote }
+                    }
+                    $pendLetter = $null
+                }
+            }
+        }
+    } catch { }
+
+    return $list
+}
+
 function Invoke-DisconnectShare {
     Write-Host "  [Remove-SmbMapping / umount.exe]  Disconnect a mapped share" -ForegroundColor Cyan
 
@@ -1565,22 +1646,21 @@ function Invoke-DisconnectShare {
         }
     } catch { }
 
-    if (Get-Command 'mount.exe' -ErrorAction SilentlyContinue) {
-        try {
-            $nfsOut = & mount.exe 2>$null
-            if ($LASTEXITCODE -eq 0 -and $nfsOut) {
-                foreach ($line in $nfsOut) {
-                    # Typical line: "Z:    \\server\export    UID, GID, ..."
-                    if ($line -match '^([A-Za-z]):\s+(\\\\\S+)') {
-                        $entries += [pscustomobject]@{ Kind='NFS'; Local="$($matches[1]):"; Remote=$matches[2] }
-                    }
-                }
-            }
-        } catch { }
-    }
+    $entries += @(Get-NfsMountEntries)
 
     if ($entries.Count -eq 0) {
         Write-Host "  No mapped shares found." -ForegroundColor Yellow
+        # Drives mapped in a non-elevated session are invisible to an elevated
+        # one (separate token namespaces). If we're elevated and the registry
+        # mirror is off, the user's drives may simply be in the other token.
+        if ((Test-IsElevated) -and -not (Test-LinkedConnectionsEnabled)) {
+            Write-Host ""
+            Write-Host "  Note: this session is elevated. If you see mapped drives in" -ForegroundColor DarkYellow
+            Write-Host "  Explorer that aren't listed here, they were created in your" -ForegroundColor DarkYellow
+            Write-Host "  non-elevated session and live in a separate drive namespace." -ForegroundColor DarkYellow
+            Write-Host "  Disconnect them from a normal (non-admin) shell, or run the" -ForegroundColor DarkYellow
+            Write-Host "  'Enable Linked Connections' utility and sign out/in." -ForegroundColor DarkYellow
+        }
         $global:LASTEXITCODE = 0
         return
     }
@@ -1619,8 +1699,23 @@ function Invoke-DisconnectShare {
                 Remove-SmbMapping -LocalPath $target.Local -Force -UpdateProfile -ErrorAction Stop
                 Write-Host "  Disconnected $($target.Local)." -ForegroundColor Green
             } else {
-                & umount.exe $target.Local
-                if ($LASTEXITCODE -ne 0) { throw "umount.exe exited $LASTEXITCODE" }
+                # Prefer the Windows NFS umount.exe (sibling of the NFS
+                # mount.exe), avoiding the MSYS Git tool that may shadow it.
+                $nfsMount = Get-NfsMountExe
+                $umount = $null
+                if ($nfsMount) {
+                    $cand = Join-Path (Split-Path $nfsMount -Parent) 'umount.exe'
+                    if (Test-Path $cand) { $umount = $cand }
+                }
+                if (-not $umount) { $umount = 'umount.exe' }
+
+                & $umount -f $target.Local
+                # umount.exe may report a stale/already-gone mount as an error;
+                # fall back to `net use /delete` which also clears the letter.
+                if ($LASTEXITCODE -ne 0) {
+                    & net use $target.Local /delete /y 2>$null | Out-Null
+                    if ($LASTEXITCODE -ne 0) { throw "umount.exe and 'net use /delete' both failed" }
+                }
                 Write-Host "  Unmounted $($target.Local)." -ForegroundColor Green
 
                 # Clean the matching line from the persistence script if present.
