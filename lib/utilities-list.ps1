@@ -3,14 +3,6 @@
 #
 # Fields: Name, Id (winget package id), Category, Description (one-line)
 
-# ── Shares ────────────────────────────────────────────────────────────────
-# Network share actions (SMB / NFS). All Action-type entries that run on Enter.
-Register-Utility @{ Name = "Map SMB Share";      Id = "WinUtil.MapSMBShare";      Category = "Shares"; Action = $true; Description = "Map an SMB / CIFS share via New-SmbMapping (persistent + cmdkey-stored creds)" }
-Register-Utility @{ Name = "Mount NFS Share";    Id = "WinUtil.MountNFSShare";    Category = "Shares"; Action = $true; Description = "Mount an NFS export via mount.exe (auto-enables 'Services for NFS' if needed)" }
-Register-Utility @{ Name = "List Shares";        Id = "WinUtil.ListShares";       Category = "Shares"; Action = $true; Description = "Show current SMB mappings (Get-SmbMapping) and NFS mounts (mount.exe)" }
-Register-Utility @{ Name = "Disconnect Share";   Id = "WinUtil.DisconnectShare";  Category = "Shares"; Action = $true; Description = "Disconnect a mapped SMB share (Remove-SmbMapping) or NFS mount (umount.exe)" }
-Register-Utility @{ Name = "Enable Linked Connections"; Id = "WinUtil.EnableLinkedConnections"; Category = "Shares"; Action = $true; Description = "Set EnableLinkedConnections=1 so drives mapped while elevated are visible to Explorer and normal shells" }
-
 # ── Browsers ──────────────────────────────────────────────────────────────
 Register-Utility @{ Name = "Google Chrome";            Id = "Google.Chrome";                          Category = "Browsers";    Description = "Google's browser with sync and developer tools" }
 Register-Utility @{ Name = "Mozilla Firefox";          Id = "Mozilla.Firefox";                        Category = "Browsers";    Description = "Mozilla's open-source browser" }
