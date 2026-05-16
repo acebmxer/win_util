@@ -926,9 +926,22 @@ function Invoke-DisconnectShare {
         try {
             if ($target.Kind -eq 'SMB') {
                 # Primary removal in the current token. -UpdateProfile drops the
-                # persistent reconnect entry. SilentlyContinue: a stale mapping
-                # can already be half-gone; Clear-DriveLetterMapping finishes it.
-                Remove-SmbMapping -LocalPath $target.Local -Force -UpdateProfile -ErrorAction SilentlyContinue
+                # persistent reconnect entry.
+                #
+                # Remove-SmbMapping raises "The network connection could not be
+                # found" as a *terminating* CIM error when the mapping is
+                # already half-gone (e.g. removed in another token, or stale).
+                # -ErrorAction SilentlyContinue does NOT suppress terminating
+                # errors, so without this inner catch the whole disconnect is
+                # wrongly reported as failed -and the Explorer-refresh notify
+                # below never runs, leaving dead drive icons behind. The drive
+                # being absent is success, not failure; Clear-DriveLetterMapping
+                # finishes any remaining teardown regardless.
+                try {
+                    Remove-SmbMapping -LocalPath $target.Local -Force -UpdateProfile -ErrorAction Stop
+                } catch {
+                    Write-Host "  (mapping already partly removed -completing teardown)" -ForegroundColor DarkGray
+                }
             } else {
                 # Prefer the Windows NFS umount.exe (sibling of the NFS
                 # mount.exe), avoiding the MSYS Git tool that may shadow it.
